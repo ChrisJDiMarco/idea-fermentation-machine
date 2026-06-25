@@ -104,6 +104,19 @@ public final class FermentationEngine {
         }
     }
 
+    /// Runs the local heuristic pass for one idea only — the precise fallback for a
+    /// user-initiated agent action when the cloud can't run (no key, capped, or
+    /// never-send), so the click still yields an instant local result without
+    /// reprocessing the whole corpus.
+    @discardableResult
+    public func processIdeaLocally(_ idea: IdeaSeed) throws -> IdeaSeed {
+        let corpus = try store.listIdeas()
+        let updated = localUpdate(idea, corpus: corpus)
+        try store.upsertIdea(updated)
+        try persistStructuredLocalResults(for: updated)
+        return updated
+    }
+
     @discardableResult
     public func runDueLocalJobs(maxJobs: Int = 25, now: Date = Date()) throws -> [FermentationJob] {
         var completed: [FermentationJob] = []
@@ -134,6 +147,20 @@ public final class FermentationEngine {
     @discardableResult
     public func runNext(provider: any LLMProvider, apiKey: String) async throws -> LLMResponse? {
         guard let job = try store.nextRunnableJob() else { return nil }
+        return try await runJob(job, provider: provider, apiKey: apiKey)
+    }
+
+    /// Runs one specific job to completion. `bypassApproval` is set for
+    /// user-initiated actions — the click is the consent, so they run immediately
+    /// instead of parking in the approval queue. The scheduler/queue path leaves it
+    /// `false`, so unattended jobs still honor the approval gate.
+    @discardableResult
+    public func runJob(
+        _ job: FermentationJob,
+        provider: any LLMProvider,
+        apiKey: String,
+        bypassApproval: Bool = false
+    ) async throws -> LLMResponse? {
         let input = try input(for: job)
         let cacheKey = TextHashing.sha256("\(job.taskClass.rawValue)\n\(input)")
         if let cached = try store.cachedOutput(for: cacheKey) {
@@ -146,9 +173,11 @@ public final class FermentationEngine {
             inputTokens: CostEstimator.roughTokenCount(input),
             outputTokens: 800
         )
-        guard !route.needsApproval else {
-            try store.setJobStatus(job.id, status: .needsApproval)
-            throw LLMProviderError.approvalRequired(route.estimatedCostUSD)
+        if !bypassApproval {
+            guard !route.needsApproval else {
+                try store.setJobStatus(job.id, status: .needsApproval)
+                throw LLMProviderError.approvalRequired(route.estimatedCostUSD)
+            }
         }
         guard let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first else {
             throw LLMProviderError.invalidResponse(provider.providerName)
@@ -182,7 +211,12 @@ public final class FermentationEngine {
             base = PrivacyPolicy.preview(idea: idea, sources: sources, taskClass: job.taskClass).payload
         } else if let sourceID = job.sourceID {
             let source = try store.source(id: sourceID)
-            base = "\(source.title)\n\(source.body)"
+            // A source flagged never-send must not have its body leave the machine,
+            // even on a cloud-routed source job. Send the title plus a redaction
+            // marker so the run can proceed without exposing protected content.
+            base = source.neverSendToCloud
+                ? "\(source.title)\n[Content withheld — this source is marked never-send.]"
+                : "\(source.title)\n\(source.body)"
         } else {
             base = job.inputHash
         }
@@ -207,13 +241,32 @@ public final class FermentationEngine {
             output: response.text,
             modelUsed: cached ? "\(response.provider)/\(response.model) cached" : "\(response.provider)/\(response.model)"
         ))
+        // Record what was ACTUALLY spent, not the pre-flight estimate. The estimate
+        // systematically undercounts (it prices a bare idea at 800 output tokens, but
+        // the real request sends the full payload + learning context and can return up
+        // to 1,000), so charging the caps the estimate lets real spend drift over the
+        // cap. A cache hit makes no provider call, so it charges nothing.
+        let recordedCost: Double
+        // Match on provider AND name: a user-configured custom model could share a name
+        // with a catalog entry, and matching name-only would price it with the wrong
+        // (catalog) rate. An unmatched/unpriced model falls back to the estimate.
+        let pricedModel = router.models.first { $0.name == response.model && $0.provider == response.provider }
+            ?? PricingCatalog.all.first { $0.name == response.model && $0.provider == response.provider }
+        if cached {
+            recordedCost = 0
+        } else if let pricedModel,
+                  let actual = CostEstimator.estimate(model: pricedModel, inputTokens: response.inputTokens, outputTokens: response.outputTokens) {
+            recordedCost = actual
+        } else {
+            recordedCost = job.estimatedCostUSD
+        }
         try store.saveUsage(LLMUsageRecord(
             provider: response.provider,
             model: response.model,
             taskClass: job.taskClass,
             inputTokens: response.inputTokens,
             outputTokens: response.outputTokens,
-            estimatedCostUSD: job.estimatedCostUSD
+            estimatedCostUSD: recordedCost
         ))
         try store.markComplete(job.id)
     }

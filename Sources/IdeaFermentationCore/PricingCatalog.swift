@@ -241,7 +241,7 @@ public struct ModelRouter: Sendable {
             case .extract, .tag, .summarize:
                 true
             case .connect, .critique, .scoreRipeness:
-                model.name.contains("air") || model.name.contains("flash") || model.name.contains("glm-4.6") || model.name.contains("glm-4.7") || model.name.contains("glm-5") || model.name.contains("gemini-3.5") || model.name.contains("gpt-5.4-mini") || model.name.contains("sonnet") || model.name.contains("opus") || model.name.contains("fable")
+                model.name.contains("air") || model.name.contains("flash") || model.name.contains("glm-4.6") || model.name.contains("glm-4.7") || model.name.contains("glm-5") || model.name.contains("gemini-3.5") || model.name.contains("gpt-5.4-mini") || model.name.contains("kimi") || model.name.contains("sonnet") || model.name.contains("opus") || model.name.contains("fable")
             case .prototypeBrief:
                 model.name.contains("pro") || model.name.contains("glm-4.6") || model.name.contains("glm-4.7") || model.name.contains("glm-5") || model.name.contains("kimi") || model.name.contains("gpt-5") || model.name.contains("claude") || model.name.contains("sonnet") || model.name.contains("opus") || model.name.contains("fable")
             }
@@ -253,23 +253,44 @@ public struct ModelRouter: Sendable {
         let keyed = availableProviders.isEmpty ? capable : capable.filter { availableProviders.contains($0.provider) }
         let candidates = keyed.isEmpty ? capable : keyed
 
-        let sorted = candidates.sorted { lhs, rhs in
-            let lhsCost = CostEstimator.estimate(model: lhs, inputTokens: inputTokens, outputTokens: outputTokens) ?? .greatestFiniteMagnitude
-            let rhsCost = CostEstimator.estimate(model: rhs, inputTokens: inputTokens, outputTokens: outputTokens) ?? .greatestFiniteMagnitude
-            if lhsCost == rhsCost {
-                return priority(lhs.provider) < priority(rhs.provider)
+        // Judgment work (critique, connection insight, the build brief) is where
+        // model quality is felt, so route it to the strongest key the operator has
+        // rather than the cheapest one — otherwise a premium key sits unused while
+        // every reasoning task lands on a flash-tier model. Bulk/structural work
+        // (tagging, summarizing, ripeness scoring) stays on the cheapest capable
+        // model because quality barely moves the result there.
+        let sorted: [LLMModel]
+        if Self.judgmentTasks.contains(taskClass) {
+            sorted = candidates.sorted { lhs, rhs in
+                let lhsQuality = Self.qualityRank(lhs)
+                let rhsQuality = Self.qualityRank(rhs)
+                if lhsQuality == rhsQuality {
+                    return priority(lhs.provider) < priority(rhs.provider)
+                }
+                return lhsQuality > rhsQuality
             }
-            return lhsCost < rhsCost
+        } else {
+            sorted = candidates.sorted { lhs, rhs in
+                let lhsCost = CostEstimator.estimate(model: lhs, inputTokens: inputTokens, outputTokens: outputTokens) ?? .greatestFiniteMagnitude
+                let rhsCost = CostEstimator.estimate(model: rhs, inputTokens: inputTokens, outputTokens: outputTokens) ?? .greatestFiniteMagnitude
+                if lhsCost == rhsCost {
+                    return priority(lhs.provider) < priority(rhs.provider)
+                }
+                return lhsCost < rhsCost
+            }
         }
 
         let selected = sorted.first ?? models[0]
         let cost = CostEstimator.estimate(model: selected, inputTokens: inputTokens, outputTokens: outputTokens)
         let needsApproval = taskClass == .prototypeBrief || (cost ?? budget.approvalThresholdUSD + 1) > budget.approvalThresholdUSD
+        let qualityRouted = Self.judgmentTasks.contains(taskClass)
         return ModelRoute(
             provider: selected.provider,
             model: selected.name,
             taskClass: taskClass,
-            rationale: "Selected cheapest configured model capable of \(taskClass.rawValue).",
+            rationale: qualityRouted
+                ? "Selected strongest configured model for \(taskClass.rawValue)."
+                : "Selected cheapest configured model capable of \(taskClass.rawValue).",
             estimatedCostUSD: cost,
             needsApproval: needsApproval
         )
@@ -277,5 +298,31 @@ public struct ModelRouter: Sendable {
 
     private func priority(_ provider: String) -> Int {
         providerPriority.firstIndex(of: provider) ?? Int.max
+    }
+
+    /// Reasoning-heavy tasks where a stronger model is worth the spend.
+    static let judgmentTasks: Set<ModelTaskClass> = [.critique, .connect, .prototypeBrief]
+
+    /// Coarse capability ordering (higher = more capable) used to pick the best
+    /// available model for judgment work. Calibrated by published model tier, not
+    /// price — the most expensive model is not always the strongest reasoner.
+    static func qualityRank(_ model: LLMModel) -> Int {
+        let name = model.name
+        if name.contains("opus") { return 100 }
+        if name.contains("gpt-5.5") { return 96 }
+        if name.contains("fable") { return 93 }
+        if name.contains("sonnet") { return 90 }
+        if name.contains("gpt-5.4") && !name.contains("mini") { return 86 }
+        if name.contains("gemini-3.1-pro") || (name.contains("pro") && name.contains("gemini")) { return 84 }
+        if name.contains("glm-5") { return 78 }
+        if name.contains("kimi-k2.7") { return 74 }
+        if name.contains("glm-4.7") { return 70 }
+        if name.contains("kimi") { return 66 }
+        if name.contains("glm-4.6") { return 62 }
+        if name.contains("gpt-5.4-mini") { return 58 }
+        if name.contains("gemini-3.5-flash") { return 50 }
+        if name.contains("air") { return 44 }
+        if name.contains("flash") { return 40 }
+        return 30
     }
 }

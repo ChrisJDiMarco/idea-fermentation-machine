@@ -91,6 +91,14 @@ struct ToastToneTests {
         // Result confirmations
         #expect(ToastTone.classify("Local pass complete — scored 3 ideas. Ripe ones move to Ready.") == .success)
         #expect(ToastTone.classify("Queued 5 cloud jobs. Track them in the Cost Center.") == .success)
+
+        // Instant inline AI: a finished cloud run reads as success; every local
+        // fallback reads as a soft warning, never a red error.
+        #expect(ToastTone.classify("Critique ready for Ripening workflow via Claude. It's on the idea's card and in Patterns.") == .success)
+        #expect(ToastTone.classify("Ran a local critique for Ripening workflow — no cloud key yet. Add a key in Settings for a sharper one.") == .warning)
+        #expect(ToastTone.classify("Ripening workflow is marked never-send, so it stayed local. Lift the privacy block to use the cloud.") == .warning)
+        #expect(ToastTone.classify("Spend cap reached — ran a local critique for X instead. Raise the cap in Settings to keep using the cloud.") == .warning)
+        #expect(ToastTone.classify("Cloud critique didn't land (timed out) — ran a local critique for X instead.") == .warning)
     }
 
     @Test func unknownMessagesDefaultToError() {

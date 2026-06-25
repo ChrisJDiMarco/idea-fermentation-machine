@@ -14,6 +14,15 @@ public enum AgentLearning {
         let ideaTitles = Dictionary(uniqueKeysWithValues: ideas.map { ($0.id, $0.title) })
         var notes: [String] = []
 
+        // Defense in depth: an idea whose evidence includes a never-send source may
+        // carry source-derived text in its body, so keep that body out of the cloud
+        // digest. The idea's title still goes (the operator's own words), but the body
+        // is redacted for these ideas.
+        let neverSendSourceIDs = Set(sources.filter(\.neverSendToCloud).map(\.id))
+        let neverSendIdeaIDs = Set(
+            ideas.filter { !Set($0.sourceIDs).isDisjoint(with: neverSendSourceIDs) }.map(\.id)
+        )
+
         notes += jobs
             .filter { $0.status == .failed && ($0.lastError?.isEmpty == false) }
             .sorted { $0.updatedAt > $1.updatedAt }
@@ -38,7 +47,8 @@ public enum AgentLearning {
             .prefix(3)
             .map { idea in
                 let tags = idea.manualTags.isEmpty ? "" : " Themes: \(idea.manualTags.joined(separator: ", "))."
-                return "Archive lesson: \(idea.title) — \(trim(idea.body, to: 140)).\(tags)"
+                let body = neverSendIdeaIDs.contains(idea.id) ? "[private]" : trim(idea.body, to: 140)
+                return "Archive lesson: \(idea.title) — \(body).\(tags)"
             }
 
         notes += connections
@@ -54,10 +64,19 @@ public enum AgentLearning {
             notes.append("Privacy constraint: \(blockedCount) source(s) are marked never-send; keep them out of cloud synthesis.")
         }
 
+        // A run log's verbatim output can echo source content (a local summarize of a
+        // never-send source writes its body into the log). Redact the output for any
+        // log whose work traces back to never-send material; keep the agent name so the
+        // memory note still carries signal.
+        let neverSendTraceIDs = Set(sources.filter(\.neverSendToCloud).map { $0.id.uuidString })
+            .union(neverSendIdeaIDs.map { $0.uuidString })
         notes += logs
             .sorted { $0.createdAt > $1.createdAt }
             .prefix(2)
-            .map { "Recent run: \($0.agentName) produced \(trim($0.output, to: 120))." }
+            .map { log in
+                let safeOutput = neverSendTraceIDs.contains(log.inputTrace) ? "[private]" : trim(log.output, to: 120)
+                return "Recent run: \(log.agentName) produced \(safeOutput)."
+            }
 
         guard !notes.isEmpty else { return "" }
         return trim("Local agent memory:\n" + notes.prefix(limit).map { "- \($0)" }.joined(separator: "\n"), to: maxCharacters)

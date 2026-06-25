@@ -222,6 +222,14 @@ public final class ShellViewModel: ObservableObject {
 
     let store: IdeaStore
     let captureServer: CaptureServer?
+    /// How provider keys are resolved. Defaults to the Keychain in production; tests
+    /// inject a stub so they never touch the operator's real keys or the network.
+    private let keyLookup: (APIProviderKey) -> String?
+    /// Estimated cost of cloud runs that have been admitted but not yet recorded as
+    /// committed usage. Spend-cap checks count this on top of committed spend so two
+    /// concurrent runs (a manual click + a scheduled scout) can't both pass the cap
+    /// against the same headroom and jointly overshoot. Mutated only on @MainActor.
+    private var reservedSpendUSD: Double = 0
     private var schedulerTask: Task<Void, Never>?
     let inbox = InboxPageViewModel()
     let fermenting = FermentingPageViewModel()
@@ -231,9 +239,14 @@ public final class ShellViewModel: ObservableObject {
     let sourcesPage = SourcesPageViewModel()
     let patterns = PatternsPageViewModel()
 
-    public init(store: IdeaStore, captureServer: CaptureServer? = nil) {
+    public init(
+        store: IdeaStore,
+        captureServer: CaptureServer? = nil,
+        keyLookup: @escaping (APIProviderKey) -> String? = { KeychainStore.load($0) }
+    ) {
         self.store = store
         self.captureServer = captureServer
+        self.keyLookup = keyLookup
         try? store.resumeInterruptedJobs()
         reload()
         startScheduler()
@@ -378,11 +391,11 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func queueCritique(for idea: IdeaSeed) {
-        queueIdeaJob(for: idea, taskClass: .critique, label: "Critique")
+        runIdeaAgentNow(for: idea, taskClass: .critique, label: "Critique")
     }
 
     public func queuePrototypeBrief(for idea: IdeaSeed) {
-        queueIdeaJob(for: idea, taskClass: .prototypeBrief, label: "Prototype brief")
+        runIdeaAgentNow(for: idea, taskClass: .prototypeBrief, label: "Prototype brief")
     }
 
     public func runLocalFermentation() {
@@ -403,34 +416,142 @@ public final class ShellViewModel: ObservableObject {
         }
     }
 
-    private func queueIdeaJob(for idea: IdeaSeed, taskClass: ModelTaskClass, label: String) {
+    /// User-initiated AI runs immediately and shows its result inline — the click
+    /// is the consent, so there's no approval queue to shuffle through. Spend caps
+    /// and the never-send privacy filter still apply as a safety net, not a gate.
+    /// When the cloud can't run (no key, cap reached, or never-send material) it
+    /// falls back to the local pass so there is always an instant result.
+    private func runIdeaAgentNow(for idea: IdeaSeed, taskClass: ModelTaskClass, label: String) {
+        guard !isRunningJob else {
+            errorMessage = "Another AI run is finishing — try again in a moment."
+            return
+        }
+        // Don't double-run the same agent on the same idea. Only a genuinely in-flight
+        // job blocks a fresh run — a parked/paused job or a leftover needs-approval job
+        // from the old queue flow must NOT permanently wedge the instant button.
+        let activeStatuses: Set<JobStatus> = [.pending, .running]
+        if jobs.contains(where: { $0.ideaID == idea.id && $0.taskClass == taskClass && activeStatuses.contains($0.status) }) {
+            selectedPage = page(for: idea.status)
+            errorMessage = "\(label) is already running for \(idea.title)."
+            return
+        }
+
+        let input = "\(idea.title)\n\(idea.body)\n\(idea.manualTags.joined(separator: " "))"
+        let route = makeRouter().route(
+            taskClass: taskClass,
+            inputTokens: CostEstimator.roughTokenCount(input),
+            outputTokens: 800
+        )
+
+        // No usable key → local pass. (The operator can still get a result.)
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+        guard let provider = providers.first(where: { $0.providerName == route.provider }),
+              let key = apiKey(for: provider.providerName) else {
+            runLocalAgentFallback(for: idea, taskClass: taskClass, label: label,
+                                  reason: "Ran a local \(label.lowercased()) for \(idea.title) — no cloud key yet. Add a key in Settings for a sharper one.")
+            return
+        }
+
+        // Privacy net: if every part of the payload is marked never-send, keep it local.
+        let relatedSources = idea.sourceIDs.compactMap { id in sources.first { $0.id == id } }
+        let preview = PrivacyPolicy.preview(idea: idea, sources: relatedSources, taskClass: taskClass)
+        guard preview.maySend else {
+            runLocalAgentFallback(for: idea, taskClass: taskClass, label: label,
+                                  reason: "\(idea.title) is marked never-send, so it stayed local. Lift the privacy block to use the cloud.")
+            return
+        }
+
+        // Spend cap is the safety net, not a gate: only fall back if a PRICED run would
+        // breach it. An unpriced model (e.g. Kimi, nil price) still runs on the
+        // operator's key — refusing it would force local forever and the "cap reached"
+        // message would be a lie.
+        if let cost = route.estimatedCostUSD, !fitsSpendCaps(cost) {
+            runLocalAgentFallback(for: idea, taskClass: taskClass, label: label,
+                                  reason: "Spend cap reached — ran a local \(label.lowercased()) for \(idea.title) instead. Raise the cap in Settings to keep using the cloud.")
+            return
+        }
+
+        // User-initiated: the click is the approval, so the job runs straight away.
+        let userRoute = ModelRoute(
+            provider: route.provider,
+            model: route.model,
+            taskClass: route.taskClass,
+            rationale: route.rationale,
+            estimatedCostUSD: route.estimatedCostUSD,
+            needsApproval: false
+        )
         do {
-            let activeStatuses: Set<JobStatus> = [.pending, .running, .paused, .needsApproval]
-            if jobs.contains(where: { $0.ideaID == idea.id && $0.taskClass == taskClass && activeStatuses.contains($0.status) }) {
-                selectedPage = .costCenter
-                errorMessage = "\(label) already queued for \(idea.title)."
-                return
-            }
-            let input = "\(idea.title)\n\(idea.body)\n\(idea.manualTags.joined(separator: " "))"
-            let route = makeRouter().route(
-                taskClass: taskClass,
-                inputTokens: CostEstimator.roughTokenCount(input),
-                outputTokens: 800
-            )
-            let status: JobStatus = route.needsApproval ? .needsApproval : .pending
-            try store.enqueue(FermentationJob(
+            let job = try store.enqueue(FermentationJob(
                 ideaID: idea.id,
                 taskClass: taskClass,
-                status: status,
+                status: .pending,
                 estimatedCostUSD: route.estimatedCostUSD ?? 0,
-                modelRoute: route,
+                modelRoute: userRoute,
                 inputHash: TextHashing.sha256("\(taskClass.rawValue)\n\(input)")
             ))
-            selectedPage = .costCenter
-            errorMessage = status == .needsApproval ? "\(label) needs approval before cloud use." : "\(label) queued for \(idea.title)."
+            // Reserve the estimated cost against the caps until the run's actual usage
+            // is recorded, so a concurrent scout synthesis can't pass the cap against
+            // the same headroom.
+            let releaseReservation = reserveSpend(route.estimatedCostUSD)
+            isRunningJob = true
+            selectedPage = page(for: idea.status)
             reload()
+            let engine = makeEngine()
+            Task {
+                defer { Task { @MainActor in
+                    releaseReservation()
+                    self.isRunningJob = false
+                } }
+                do {
+                    _ = try await engine.runJob(job, provider: provider, apiKey: key, bypassApproval: true)
+                    await MainActor.run {
+                        self.reload()
+                        self.errorMessage = "\(label) ready for \(idea.title) via \(provider.providerName). \(self.resultLocationHint(for: taskClass))"
+                    }
+                } catch {
+                    await MainActor.run {
+                        self.runLocalAgentFallback(for: idea, taskClass: taskClass, label: label,
+                                                   reason: "Cloud \(label.lowercased()) didn't land (\(error.localizedDescription)) — ran a local \(label.lowercased()) for \(idea.title) instead.")
+                    }
+                }
+            }
+        } catch {
+            isRunningJob = false
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    /// The local equivalent of a cloud agent run — used when the cloud can't or
+    /// shouldn't run. A prototype brief maps to the full local build plan; every
+    /// other agent maps to the per-idea local pass (which always leaves a critique).
+    private func runLocalAgentFallback(for idea: IdeaSeed, taskClass: ModelTaskClass, label: String, reason: String) {
+        if taskClass == .prototypeBrief {
+            // The local build plan is rich on its own; createBuildPlan sets a clear
+            // success message and navigates, so there's nothing to add here.
+            createBuildPlan(for: idea)
+            return
+        }
+        do {
+            let engine = makeEngine()
+            let updated = try engine.processIdeaLocally(idea)
+            selectedPage = page(for: updated.status)
+            reload()
+            errorMessage = reason + " " + resultLocationHint(for: taskClass)
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    /// Where the result of a finished agent run shows up, so the toast can point the
+    /// operator straight to it instead of leaving them hunting.
+    private func resultLocationHint(for taskClass: ModelTaskClass) -> String {
+        switch taskClass {
+        case .critique, .connect:
+            return "It's on the idea's card and in Patterns."
+        case .prototypeBrief:
+            return "Open it from the idea's ··· menu."
+        default:
+            return "It's on the idea."
         }
     }
 
@@ -486,7 +607,11 @@ public final class ShellViewModel: ObservableObject {
         guard !isRunningJob else { return }
         isRunningJob = true
         Task {
-            defer { Task { @MainActor in self.isRunningJob = false } }
+            var releaseReservation: () -> Void = {}
+            defer { Task { @MainActor in
+                releaseReservation()
+                self.isRunningJob = false
+            } }
             do {
                 try ensureSpendCapsAllowNextJob()
                 let providers = ProviderFactory.defaultProviders(settings: providerSettings)
@@ -500,6 +625,9 @@ public final class ShellViewModel: ObservableObject {
                     await MainActor.run { self.errorMessage = "Add a \(provider.providerName) API key in Settings first." }
                     return
                 }
+                // Reserve this job's cost against the caps across the run so a
+                // concurrent scout synthesis can't double-spend the same headroom.
+                await MainActor.run { releaseReservation = self.reserveSpend(job.estimatedCostUSD) }
                 let engine = makeEngine()
                 _ = try await engine.runNext(provider: provider, apiKey: key)
                 await MainActor.run { self.reload() }
@@ -849,7 +977,7 @@ public final class ShellViewModel: ObservableObject {
                 // A real synthesis call (when web scouting + a cloud key + the spend
                 // cap allow) proposes an ORIGINAL idea from the signals; otherwise the
                 // deterministic template. Either way it's source-backed and local-scored.
-                let synthesized = shouldUseWeb ? await synthesizeScoutIdea(mission: mission, signals: signals, focus: focus) : nil
+                let synthesized = shouldUseWeb ? await synthesizeScoutIdea(mission: mission, signals: signals, focus: focus, unattended: scheduledOnly) : nil
                 let seed = synthesized ?? AutonomousScout.draftIdea(profile: autonomyProfile, mission: mission, signals: signals)
                 var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
                 idea.sourceIDs = sourceIDs
@@ -911,7 +1039,7 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func hasKey(_ key: APIProviderKey) -> Bool {
-        KeychainStore.load(key) != nil
+        keyLookup(key) != nil
     }
 
     public func resetAllData() {
@@ -1064,11 +1192,7 @@ public final class ShellViewModel: ObservableObject {
 
     private func canAutoRunCloud() throws -> Bool {
         guard let job = try store.nextRunnableJob(), job.estimatedCostUSD > 0 else { return false }
-        let calendar = Calendar.current
-        let day = calendar.startOfDay(for: Date())
-        let month = calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? day
-        return try store.usageTotalUSD(since: day) + job.estimatedCostUSD <= schedulerSettings.dailySpendCapUSD
-            && store.usageTotalUSD(since: month) + job.estimatedCostUSD <= schedulerSettings.monthlySpendCapUSD
+        return fitsSpendCaps(job.estimatedCostUSD)
     }
 
     private func ensureSpendCapsAllowNextJob() throws {
@@ -1076,10 +1200,10 @@ public final class ShellViewModel: ObservableObject {
         let calendar = Calendar.current
         let day = calendar.startOfDay(for: Date())
         let month = calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? day
-        guard try store.usageTotalUSD(since: day) + job.estimatedCostUSD <= schedulerSettings.dailySpendCapUSD else {
+        guard committedPlusReservedUSD(since: day) + job.estimatedCostUSD <= schedulerSettings.dailySpendCapUSD else {
             throw LLMProviderError.requestFailed("Daily spend cap reached.")
         }
-        guard try store.usageTotalUSD(since: month) + job.estimatedCostUSD <= schedulerSettings.monthlySpendCapUSD else {
+        guard committedPlusReservedUSD(since: month) + job.estimatedCostUSD <= schedulerSettings.monthlySpendCapUSD else {
             throw LLMProviderError.requestFailed("Monthly spend cap reached.")
         }
     }
@@ -1286,12 +1410,12 @@ public final class ShellViewModel: ObservableObject {
     }
 
     private func apiKey(for provider: String) -> String? {
-        if provider == "Gemini" { return KeychainStore.load(.gemini) }
-        if provider == "Z.ai" { return KeychainStore.load(.zai) }
-        if provider == "Kimi" { return KeychainStore.load(.kimi) }
-        if provider == "OpenAI" { return KeychainStore.load(.openAI) }
-        if provider == "Claude" { return KeychainStore.load(.anthropic) }
-        return KeychainStore.load(.openAICompatible)
+        if provider == "Gemini" { return keyLookup(.gemini) }
+        if provider == "Z.ai" { return keyLookup(.zai) }
+        if provider == "Kimi" { return keyLookup(.kimi) }
+        if provider == "OpenAI" { return keyLookup(.openAI) }
+        if provider == "Claude" { return keyLookup(.anthropic) }
+        return keyLookup(.openAICompatible)
     }
 
     /// Provider names the operator currently has a usable key for. Drives routing
@@ -1438,12 +1562,12 @@ public final class ShellViewModel: ObservableObject {
     /// signals. Returns nil (caller falls back to the template) unless a usable
     /// provider key exists and the day's spend cap still has room — so an
     /// autonomous run can never silently blow the budget.
-    private func synthesizeScoutIdea(mission: ScoutMission, signals: [ScoutSignal], focus: ScoutFocus) async -> ExtractedSeed? {
-        // Unattended cloud synthesis sends the operator's taste/goals to a third-party
-        // LLM and spends money. The equivalent manual prototype-brief job always blocks
-        // on approval, so this must not be weaker: stay off until the operator has
-        // explicitly dropped the approval requirement. Default-safe → template instead.
-        guard !autonomyProfile.requireApprovalBeforeBuildHandoff else { return nil }
+    private func synthesizeScoutIdea(mission: ScoutMission, signals: [ScoutSignal], focus: ScoutFocus, unattended: Bool) async -> ExtractedSeed? {
+        // A manual "Run scout now" is user-initiated — the click is the consent, so it
+        // synthesizes immediately (still spend-capped). An *unattended* scheduled run
+        // sends taste/goals to a third-party LLM with nobody watching, so it stays off
+        // until the operator has explicitly dropped the approval requirement.
+        if unattended && autonomyProfile.requireApprovalBeforeBuildHandoff { return nil }
         let providers = ProviderFactory.defaultProviders(settings: providerSettings)
         let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: 600, outputTokens: 500)
         guard let provider = providers.first(where: { $0.providerName == route.provider }),
@@ -1451,6 +1575,10 @@ public final class ShellViewModel: ObservableObject {
               let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first,
               canAffordSynthesis(estimatedCost: route.estimatedCostUSD)
         else { return nil }
+        // Hold the cost against the caps across the await so a concurrent manual run
+        // can't pass the same headroom; release once usage is recorded (or it failed).
+        let releaseReservation = reserveSpend(route.estimatedCostUSD)
+        defer { releaseReservation() }
         do {
             guard let seed = try await AutonomousScout.synthesize(
                 profile: autonomyProfile, mission: mission, signals: signals,
@@ -1470,15 +1598,43 @@ public final class ShellViewModel: ObservableObject {
     /// spend caps. An unpriced model (nil estimate) is refused outright, so it can't
     /// slip a real cloud call past the caps recorded as a phantom $0.
     private func canAffordSynthesis(estimatedCost: Double?) -> Bool {
+        // Unattended synthesis refuses an unpriced model (nil) so a real cloud call
+        // can't slip past the caps recorded as a phantom $0.
         guard let estimatedCost else { return false }
-        guard estimatedCost > 0 else { return true }
+        return fitsSpendCaps(estimatedCost)
+    }
+
+    /// Committed spend (from the DB) plus the cost of runs admitted but not yet
+    /// recorded. Every cap check gates on this so two concurrent runs can't both pass
+    /// against the same headroom and jointly overshoot.
+    private func committedPlusReservedUSD(since date: Date) -> Double {
+        ((try? store.usageTotalUSD(since: date)) ?? 0) + reservedSpendUSD
+    }
+
+    /// Whether a priced run of `cost` fits under BOTH the daily and monthly caps,
+    /// counting committed + reserved spend. A zero/negative cost always fits.
+    private func fitsSpendCaps(_ cost: Double) -> Bool {
+        guard cost > 0 else { return true }
         let calendar = Calendar.current
         let day = calendar.startOfDay(for: Date())
         let month = calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? day
-        let daySpent = (try? store.usageTotalUSD(since: day)) ?? 0
-        let monthSpent = (try? store.usageTotalUSD(since: month)) ?? 0
-        return daySpent + estimatedCost <= schedulerSettings.dailySpendCapUSD
-            && monthSpent + estimatedCost <= schedulerSettings.monthlySpendCapUSD
+        return committedPlusReservedUSD(since: day) + cost <= schedulerSettings.dailySpendCapUSD
+            && committedPlusReservedUSD(since: month) + cost <= schedulerSettings.monthlySpendCapUSD
+    }
+
+    /// Reserve `cost` for an admitted-but-not-yet-recorded run. Returns a release
+    /// closure to call exactly once when the run's usage is committed (or it failed),
+    /// so the reservation can't leak and permanently shrink the operator's headroom.
+    private func reserveSpend(_ cost: Double?) -> () -> Void {
+        let amount = max(0, cost ?? 0)
+        reservedSpendUSD += amount
+        var released = false
+        return { [weak self] in
+            guard !released else { return }
+            released = true
+            guard let self else { return }
+            self.reservedSpendUSD = max(0, self.reservedSpendUSD - amount)
+        }
     }
 
     /// The self-tuning scout brief — derived live from what the operator has built,

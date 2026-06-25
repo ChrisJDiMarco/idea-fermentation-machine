@@ -51,11 +51,13 @@ enum ToastTone: Equatable {
         if has([
             "already", "needs approval", "need approval", "cap reached", "blocked",
             "remove the", "before approving", "add a ", "add an ", "api key",
-            "enable an", "running jobs finish", "before they can pause"
+            "enable an", "running jobs finish", "before they can pause",
+            "never-send", "ran a local", "didn't land", "try again in a moment"
         ]) { return .warning }
         if has([
             "created", "queued", "imported", "generated", "saved", "exported",
-            "duplicated", "ready to build", "recorded", "complete", "scored"
+            "duplicated", "ready to build", "recorded", "complete", "scored",
+            "ready for"
         ]) { return .success }
         return .error
     }

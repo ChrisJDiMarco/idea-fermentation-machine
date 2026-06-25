@@ -280,20 +280,26 @@ struct ShellViewModelTests {
         #expect(markdown.contains("## Acceptance Checks"))
     }
 
-    @Test func perIdeaAgentJobsQueueOnceAndRouteToCostCenter() throws {
+    @Test func userInitiatedAgentRunsInstantlyAndFallsBackToLocalWithoutAKey() throws {
+        // With no cloud key configured (the test environment), a user-initiated
+        // critique should NOT park in the approval queue — it runs the local pass
+        // immediately and leaves a result, so the click always produces something.
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
-        let model = ShellViewModel(store: store)
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
         model.addIdea(title: "Ripening workflow", body: "Needs critique and a prototype brief.", tags: "workflow")
         let idea = try #require(model.ideas.first)
 
         model.queueCritique(for: idea)
-        model.queueCritique(for: idea)
-        model.queuePrototypeBrief(for: idea)
 
-        #expect(model.selectedPage == .costCenter)
-        #expect(model.jobs.filter { $0.ideaID == idea.id && $0.taskClass == .critique }.count == 1)
-        #expect(model.jobs.filter { $0.ideaID == idea.id && $0.taskClass == .prototypeBrief }.count == 1)
-        #expect(model.errorMessage?.contains("queued") == true || model.errorMessage?.contains("needs approval") == true)
+        // No cloud job left waiting for approval, and a local critique now exists.
+        #expect(model.jobs.allSatisfy { !($0.ideaID == idea.id && $0.taskClass == .critique && $0.status == .needsApproval) })
+        #expect(model.critique(for: idea) != nil)
+        #expect(model.selectedPage != .costCenter)
+        #expect(model.errorMessage?.contains("local") == true)
+
+        // The prototype-brief action falls back to a local build plan in the same way.
+        model.queuePrototypeBrief(for: idea)
+        #expect(model.buildPlan(for: idea) != nil)
     }
 
     @Test func queueControlsPauseResumeAndRetrySafely() throws {

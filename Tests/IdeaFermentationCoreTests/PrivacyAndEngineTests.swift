@@ -124,4 +124,91 @@ struct PrivacyAndEngineTests {
         #expect(output.contains("Archive lesson: Old CRM"))
         #expect(output.count < 4_000)
     }
+
+    @Test func neverSendSourceJobRedactsBodyFromCloudPayload() async throws {
+        // A cloud-routed source job must never put a never-send source's body on the wire.
+        let store = try makeStore()
+        let source = try store.createSource(SourceItem(type: .note, title: "Vault", body: "TOP-SECRET-PLAINTEXT-BODY", neverSendToCloud: true))
+        let model = EchoInputProvider().availableModels[0]
+        let router = ModelRouter(models: [model], budget: AppBudget(approvalThresholdUSD: 99), providerPriority: ["Echo"])
+        _ = try store.enqueue(FermentationJob(
+            sourceID: source.id,
+            taskClass: .summarize,
+            modelRoute: router.route(taskClass: .summarize, inputTokens: 10, outputTokens: 10),
+            inputHash: "x"
+        ))
+
+        let engine = FermentationEngine(store: store, router: router)
+        _ = try await engine.runNext(provider: EchoInputProvider(), apiKey: "test")
+
+        // The echoed output IS the exact payload sent to the provider.
+        let sent = try #require(store.runLogs().first?.output)
+        #expect(!sent.contains("TOP-SECRET-PLAINTEXT-BODY"))
+        #expect(sent.contains("Vault"))
+        #expect(sent.contains("never-send"))
+    }
+
+    @Test func cloudDigestRedactsNeverSendSourcedIdeaBodies() async throws {
+        // An archived idea whose evidence is a never-send source must not have its body
+        // leak into another idea's cloud payload via the agent-learning digest.
+        let store = try makeStore()
+        let secret = try store.createSource(SourceItem(type: .note, title: "Leak source", body: "x", neverSendToCloud: true))
+        var archived = try store.createIdea(title: "Archived idea", body: "SECRET-ARCHIVED-BODY", tags: ["theme"], status: .archived)
+        archived.sourceIDs = [secret.id]
+        try store.upsertIdea(archived)
+        let target = try store.createIdea(title: "Live idea", body: "Run a cloud tag pass.")
+
+        let model = EchoInputProvider().availableModels[0]
+        let router = ModelRouter(models: [model], budget: AppBudget(approvalThresholdUSD: 99), providerPriority: ["Echo"])
+        _ = try store.enqueue(FermentationJob(
+            ideaID: target.id,
+            taskClass: .tag,
+            modelRoute: router.route(taskClass: .tag, inputTokens: 10, outputTokens: 10),
+            inputHash: "x"
+        ))
+        let engine = FermentationEngine(store: store, router: router)
+        _ = try await engine.runNext(provider: EchoInputProvider(), apiKey: "test")
+
+        let sent = try #require(store.runLogs().first?.output)
+        #expect(sent.contains("Archive lesson: Archived idea"))
+        #expect(!sent.contains("SECRET-ARCHIVED-BODY"))
+        #expect(sent.contains("[private]"))
+    }
+
+    @Test func digestRedactsRunLogOutputTracingToNeverSendSource() {
+        // A run log whose work traces to a never-send source must not echo its captured
+        // output into the cloud memory digest.
+        let secret = SourceItem(type: .note, title: "Vault", body: "secret", neverSendToCloud: true)
+        let leakyLog = AgentRunLog(
+            jobID: UUID(),
+            agentName: "Summarizer",
+            promptVersion: "v1",
+            inputTrace: secret.id.uuidString,
+            output: "LEAKED-RUNLOG-SECRET inside the summary",
+            modelUsed: "Local/heuristic-v1"
+        )
+        let digest = AgentLearning.promptContext(
+            ideas: [], sources: [secret], logs: [leakyLog], jobs: [], connections: [], outcomes: []
+        )
+        #expect(!digest.contains("LEAKED-RUNLOG-SECRET"))
+        #expect(digest.contains("Recent run: Summarizer"))
+    }
+
+    @Test func usageRecordsActualTokenCostNotInflatedEstimate() async throws {
+        // The cap accounting must reflect what was actually spent, not the pre-flight
+        // estimate (which structurally undercounts), so a wildly wrong estimate is
+        // corrected from the model's real returned token counts.
+        let store = try makeStore()
+        let idea = try store.createIdea(title: "Cost check", body: "Body text here.")
+        let model = MockProvider().availableModels[0] // $0.1/$0.1 per million; returns 10/10 tokens
+        let router = ModelRouter(models: [model], budget: AppBudget(approvalThresholdUSD: 99), providerPriority: ["Mock"])
+        let inflated = ModelRoute(provider: "Mock", model: "mock-cheap", taskClass: .tag, rationale: "t", estimatedCostUSD: 5.0, needsApproval: false)
+        _ = try store.enqueue(FermentationJob(ideaID: idea.id, taskClass: .tag, estimatedCostUSD: 5.0, modelRoute: inflated, inputHash: "x"))
+
+        let engine = FermentationEngine(store: store, router: router)
+        _ = try await engine.runNext(provider: MockProvider(), apiKey: "test")
+
+        let recorded = try store.usageTotalUSD(since: Date(timeIntervalSince1970: 0))
+        #expect(recorded < 0.01) // actual ~0.000002, not the $5.00 estimate
+    }
 }

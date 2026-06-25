@@ -145,6 +145,22 @@ public struct IdeaFermentationRootView: View {
 
             Spacer(minLength: 10)
 
+            if model.isRunningJob || model.isRunningScout {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(model.isRunningScout ? "Scouting…" : "Thinking…")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(IFMTheme.muted)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 30)
+                .background(IFMTheme.canvas)
+                .clipShape(Capsule())
+                .overlay { Capsule().stroke(IFMTheme.border.opacity(0.7)) }
+                .transition(.opacity.combined(with: .scale(scale: 0.96)))
+                .accessibilityLabel(model.isRunningScout ? "Scout running" : "AI run in progress")
+            }
+
             Button {
                 model.selectedPage == .sources ? model.startSourceCapture() : model.startIdeaCapture()
             } label: {
@@ -180,6 +196,8 @@ public struct IdeaFermentationRootView: View {
         .padding(.trailing, 14)
         .frame(height: 56)
         .background(IFMTheme.panelStrong)
+        .animation(IFMMotion.standard, value: model.isRunningJob)
+        .animation(IFMMotion.standard, value: model.isRunningScout)
     }
 
     private func toolbarIcon(_ symbol: String, _ label: String, action: @escaping () -> Void) -> some View {
@@ -836,8 +854,8 @@ struct FermentationDetailCard: View {
                     }
                     .padding(18)
                     HStack {
-                        Button("Queue Critique") { model.queueCritique(for: idea) }
-                        Button("Queue Prototype Brief") { model.queuePrototypeBrief(for: idea) }
+                        Button("Critique") { model.queueCritique(for: idea) }
+                        Button("Prototype Brief") { model.queuePrototypeBrief(for: idea) }
                         Spacer()
                     }
                     .padding(.horizontal, 18)
@@ -847,8 +865,8 @@ struct FermentationDetailCard: View {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 0)], spacing: 0) {
                         DetailPane(title: "Signals", symbol: "sun.max", color: IFMTheme.orange, lines: idea.manualTags.isEmpty ? ["Add tags or sources to strengthen the signal."] : idea.manualTags)
                         DetailPane(title: "Evidence", symbol: "doc.text", color: IFMTheme.green, lines: ["\(idea.sourceIDs.count) linked sources", "Evidence score \(Int(idea.evidence))"])
-                        DetailPane(title: "Contradictions", symbol: "exclamationmark.triangle", color: IFMTheme.red, lines: critique.map { $0.contradictions + $0.risks } ?? ["Queue critique to surface objections."])
-                        DetailPane(title: "Next Experiment", symbol: "bolt", color: IFMTheme.blue, lines: critique?.assumptions.isEmpty == false ? critique!.assumptions : ["Queue a prototype brief when ready."])
+                        DetailPane(title: "Contradictions", symbol: "exclamationmark.triangle", color: IFMTheme.red, lines: critique.map { $0.contradictions + $0.risks } ?? ["Run a critique to surface objections."])
+                        DetailPane(title: "Next Experiment", symbol: "bolt", color: IFMTheme.blue, lines: critique?.assumptions.isEmpty == false ? critique!.assumptions : ["Generate a prototype brief when ready."])
                         DetailPane(title: "Readiness", symbol: "chart.line.uptrend.xyaxis", color: IFMTheme.purple, lines: ["Ripeness \(Int(idea.ripeness))", "Feasibility \(Int(idea.feasibility))"])
                         DetailPane(title: "Privacy", symbol: "lock.shield", color: IFMTheme.slate, lines: ["Preview cloud payloads before sending."])
                     }
@@ -1056,7 +1074,7 @@ struct RipeningRow: View {
                         .font(.caption)
                         .foregroundStyle(IFMTheme.muted)
                     HStack {
-                        Button("Queue Critique") { model.queueCritique(for: idea) }
+                        Button("Critique") { model.queueCritique(for: idea) }
                         Button("Prototype Brief") { model.queuePrototypeBrief(for: idea) }
                     }
                     .font(.caption)
@@ -1066,8 +1084,8 @@ struct RipeningRow: View {
                     GridRow {
                         section("Why It’s Ripening", idea.manualTags.isEmpty ? ["Local pass found enough body text and source signal."] : idea.manualTags)
                         section("Evidence", ["\(idea.sourceIDs.count) linked sources", "Evidence \(Int(idea.evidence))"])
-                        section("Contradictions", model.critique(for: idea).map { Array(($0.contradictions + $0.risks).prefix(3)) } ?? ["Queue critique to find objections."], danger: true)
-                        section("Next Experiment", ["Queue a prototype brief or build plan."])
+                        section("Contradictions", model.critique(for: idea).map { Array(($0.contradictions + $0.risks).prefix(3)) } ?? ["Run a critique to find objections."], danger: true)
+                        section("Next Experiment", ["Generate a prototype brief or build plan."])
                     }
                 }
                 .padding(.vertical, 12)

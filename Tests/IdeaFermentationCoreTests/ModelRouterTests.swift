@@ -56,4 +56,37 @@ struct ModelRouterTests {
         #expect(route.model == "gpt-5.5")
         #expect(route.needsApproval)
     }
+
+    @Test func judgmentTasksRouteToStrongestAvailableKey() {
+        // Operator holds both a flash-tier and a premium key. Judgment work should
+        // land on the strongest one, not the cheapest — otherwise the premium key
+        // the operator paid for never gets used.
+        let router = ModelRouter(availableProviders: ["Z.ai", "Claude"])
+        let critique = router.route(taskClass: .critique, inputTokens: 1_500, outputTokens: 800)
+        #expect(critique.model == "claude-opus-4-8")
+
+        let connect = router.route(taskClass: .connect, inputTokens: 1_500, outputTokens: 800)
+        #expect(connect.model == "claude-opus-4-8")
+
+        // Bulk work stays cheap even with a premium key available.
+        let tag = router.route(taskClass: .tag, inputTokens: 1_500, outputTokens: 800)
+        #expect(tag.provider == "Z.ai")
+        #expect(tag.model != "claude-opus-4-8")
+    }
+
+    @Test func judgmentFallsBackToBestCheapModelWithoutPremiumKeys() {
+        // With only Z.ai keyed, judgment work still picks Z.ai's strongest tier.
+        let router = ModelRouter(availableProviders: ["Z.ai"])
+        let critique = router.route(taskClass: .critique, inputTokens: 1_500, outputTokens: 800)
+        #expect(critique.provider == "Z.ai")
+        #expect(critique.model.contains("glm-5") || critique.model.contains("glm-4.7"))
+    }
+
+    @Test func kimiOnlyOperatorCanCloudCritique() {
+        // A Kimi-only operator must be able to run cloud critiques on their own key
+        // rather than being silently forced to the local heuristic.
+        let router = ModelRouter(availableProviders: ["Kimi"])
+        let critique = router.route(taskClass: .critique, inputTokens: 1_000, outputTokens: 800)
+        #expect(critique.provider == "Kimi")
+    }
 }
