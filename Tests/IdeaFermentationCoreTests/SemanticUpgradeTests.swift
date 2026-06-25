@@ -24,6 +24,23 @@ struct SemanticUpgradeTests {
         #expect(novelNovelty > derivativeNovelty)
     }
 
+    /// A failed/empty embedding (all zeros) must NOT read as "maximally distant" and
+    /// win full novelty — it carries no signal, so novelty falls back to the lexical
+    /// score regardless of the corpus.
+    @Test func zeroVectorEmbeddingDoesNotInflateNovelty() {
+        let blank = IdeaSeed(title: "ai agent", body: "x", manualTags: ["ai"], embedding: Array(repeating: 0.0, count: 8))
+        let real = IdeaSeed(title: "weather music", body: "y", embedding: [0.1, 0.2, 0.3, 0, 0, 0, 0, 0])
+        let tokens = Tokenizer.vocabulary("ai agent")
+
+        let withCorpus = FermentationEngine.noveltyScore(for: blank, tokens: tokens, interestOverlap: 0, tagBoost: 3, corpus: [blank, real])
+        let aloneInCorpus = FermentationEngine.noveltyScore(for: blank, tokens: tokens, interestOverlap: 0, tagBoost: 3, corpus: [blank])
+
+        // A zero-vector idea scores the same whether or not a corpus exists — the
+        // meaningless "distance" never moves the score. (Pre-fix, withCorpus inflated.)
+        #expect(withCorpus == aloneInCorpus)
+        #expect(withCorpus < 100)
+    }
+
     /// Calibration guard for scout routing: two same-topic phrasings must clear the
     /// strong-match floor (so the scout attaches), and an unrelated one must fall
     /// below it (so the scout starts a fresh idea). Locks the floor to the active

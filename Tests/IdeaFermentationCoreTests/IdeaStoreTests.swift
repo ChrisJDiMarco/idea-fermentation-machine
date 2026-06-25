@@ -116,6 +116,22 @@ struct IdeaStoreTests {
         #expect(try store.source(textHash: source.textHash) == nil)
     }
 
+    @Test func upsertKeepsTheEmbeddingInSyncWithEditedText() throws {
+        let store = try makeStore()
+        let idea = try store.createIdea(title: "Gardening", body: "tomatoes and basil in the backyard")
+        let original = try store.idea(id: idea.id).embedding
+
+        var edited = try store.idea(id: idea.id)
+        edited.title = "Quantum computing"
+        edited.body = "superconducting qubits and surface codes for error correction"
+        try store.upsertIdea(edited)
+
+        let updated = try store.idea(id: edited.id).embedding
+        // The stored vector must reflect the NEW text, not the old — no stale embeddings.
+        #expect(updated != original)
+        #expect(updated == LocalEmbeddings.embed("Quantum computing\nsuperconducting qubits and surface codes for error correction\n"))
+    }
+
     @Test func autonomyProfileAndScoutMissionsPersist() throws {
         let folder = try tempFolder()
         let url = folder.appendingPathComponent("ideas.sqlite")

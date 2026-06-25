@@ -82,6 +82,27 @@ struct ShellViewModelTests {
         #expect(model.errorMessage?.contains("Recorded outcome") == true)
     }
 
+    @Test func reRecordingAnOutcomeReversesThePriorTasteSignal() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        model.addIdea(title: "Ambient memory recall", body: "A private local recall app.", tags: "memory")
+        let idea = try #require(model.ideas.first)
+
+        // First: shipped → positive taste for the "memory" theme.
+        model.startBuildOutcome(for: idea)
+        model.outcomeDraft.result = .shipped
+        model.saveBuildOutcomeDraft()
+        #expect(model.tasteModel.affinity(for: ["memory"]) > 0)
+
+        // Re-record the same idea as abandoned → the signal must flip negative, not
+        // accumulate contradictorily and stay positive.
+        let archived = try #require(model.archive.items.first)
+        model.startBuildOutcome(for: archived)
+        model.outcomeDraft.result = .abandoned
+        model.saveBuildOutcomeDraft()
+        #expect(model.tasteModel.affinity(for: ["memory"]) < 0)
+    }
+
     @Test func schedulerSettingsUpdateViewModel() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store)

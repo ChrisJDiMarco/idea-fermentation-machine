@@ -378,6 +378,10 @@ struct AutonomyPage: View {
                             .onChange(of: model.autonomyProfile.allowWebScouting) { _, _ in model.persistAutonomyConfiguration() }
                         Toggle("Require approval before build handoff", isOn: $model.autonomyProfile.requireApprovalBeforeBuildHandoff)
                             .onChange(of: model.autonomyProfile.requireApprovalBeforeBuildHandoff) { _, _ in model.persistAutonomyConfiguration() }
+                            .help("While on (the default), the scout uses a free local template for new ideas. Turn off to let it spend a cloud call — within your spend caps — to synthesize an original idea from the day's signals.")
+                        Text("On by default: keeps autonomous runs from sending data to a paid model unattended.")
+                            .font(.caption2)
+                            .foregroundStyle(IFMTheme.muted)
                     }
                 }
 

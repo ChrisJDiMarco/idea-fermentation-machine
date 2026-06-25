@@ -206,11 +206,17 @@ public final class IdeaStore {
         // build must be recomputed. The re-embed and the version bump commit together,
         // so an interrupted upgrade re-runs cleanly next launch rather than leaving a
         // database whose vectors live in two incompatible spaces.
-        if try currentSchemaVersion() < 4 {
+        // Re-embed when the schema is old OR when the active embedding backend has a
+        // different vector dimension than what's on disk — e.g. the system sentence
+        // model became (un)available between launches, which would otherwise leave
+        // 512-dim and 128-dim vectors mixed in one store and make cosine meaningless.
+        let storedDim = try loadSetting("embedding_dim", defaultValue: 0)
+        if try currentSchemaVersion() < 4 || storedDim != LocalEmbeddings.dimensions {
             try db.transaction {
                 try reembedAllIdeas()
                 try db.execute("PRAGMA user_version = 4")
             }
+            try saveSetting("embedding_dim", LocalEmbeddings.dimensions)
         }
     }
 
@@ -290,6 +296,11 @@ public final class IdeaStore {
     }
 
     public func upsertIdea(_ idea: IdeaSeed) throws {
+        var idea = idea
+        // Keep the stored vector in lockstep with the idea's text on every write, so
+        // novelty, connections, source-linking, and scout routing can never read an
+        // embedding that's stale relative to an edited title/body/tags.
+        idea.embedding = LocalEmbeddings.embed(embeddingText(for: idea))
         // Base row + FTS mirror must commit together; a crash between them used to
         // leave the search index pointing at stale or missing text.
         try db.transaction {
@@ -994,11 +1005,15 @@ public final class IdeaStore {
     }
 
     public func loadTasteModel() throws -> TasteModel {
-        try loadSetting("taste_model", defaultValue: TasteModel())
+        // v2: the model now learns over readable theme words (tags + title), not the
+        // whole stemmed body. The old "taste_model" keys are incompatible and were
+        // polluted with filler, so we start fresh under a new key rather than migrate
+        // junk forward.
+        try loadSetting("taste_model_v2", defaultValue: TasteModel())
     }
 
     public func saveTasteModel(_ model: TasteModel) throws {
-        try saveSetting("taste_model", model)
+        try saveSetting("taste_model_v2", model)
     }
 
     public func loadCaptureServerConfig() throws -> CaptureServerConfig {

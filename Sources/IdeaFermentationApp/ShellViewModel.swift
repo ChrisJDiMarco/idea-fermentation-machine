@@ -1287,9 +1287,11 @@ public final class ShellViewModel: ObservableObject {
     private func reinforceTaste(with idea: IdeaSeed, label: Double, rate: Double = TasteModel.defaultLearningRate) {
         guard label != 0 else { return }
         do {
-            let tokens = Tokenizer.vocabulary("\(idea.title) \(idea.body) \(idea.manualTags.joined(separator: " "))")
-            guard !tokens.isEmpty else { return }
-            let updated = try store.loadTasteModel().reinforced(with: tokens, label: label, rate: rate)
+            // Learn over the idea's curated themes (tags + distinctive title words),
+            // not its whole body — so the model captures real themes, not filler.
+            let terms = TasteModel.themeTerms(title: idea.title, tags: idea.manualTags)
+            guard !terms.isEmpty else { return }
+            let updated = try store.loadTasteModel().reinforced(with: terms, label: label, rate: rate)
             try store.saveTasteModel(updated)
             tasteModel = updated
         } catch {
@@ -1309,13 +1311,21 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func saveBuildOutcomeDraft() {
-        guard let ideaID = outcomeDraft.ideaID, let idea = ideas.first(where: { $0.id == ideaID }) else {
+        guard let ideaID = outcomeDraft.ideaID else {
             activeSheet = nil
             return
         }
         let result = outcomeDraft.result
         let note = outcomeDraft.note.trimmingCharacters(in: .whitespacesAndNewlines)
         do {
+            // Resolve from the store, not the (possibly search-filtered) ideas array,
+            // so an active search can't make the sheet silently drop the outcome.
+            let idea = try store.idea(id: ideaID)
+            // Re-recording must not double-teach: reverse the prior outcome's taste
+            // signal before applying the new one, so the model reflects only the latest.
+            if let prior = try store.buildOutcome(for: ideaID) {
+                reinforceTaste(with: idea, label: -prior.result.tasteLabel, rate: prior.result.tasteRate)
+            }
             try store.saveBuildOutcome(BuildOutcome(ideaID: ideaID, result: result, note: note))
             // Building is the strongest taste signal there is — reinforce harder than
             // a mere mark-ready, in the direction the outcome implies.
@@ -1327,7 +1337,8 @@ public final class ShellViewModel: ObservableObject {
             selectedPage = .archive
             errorMessage = "Recorded outcome for \(idea.title): \(result.title)."
         } catch {
-            errorMessage = error.localizedDescription
+            errorMessage = "Could not record that outcome: \(error.localizedDescription)"
+            activeSheet = nil
         }
     }
 
@@ -1389,12 +1400,17 @@ public final class ShellViewModel: ObservableObject {
     /// provider key exists and the day's spend cap still has room — so an
     /// autonomous run can never silently blow the budget.
     private func synthesizeScoutIdea(mission: ScoutMission, signals: [ScoutSignal], focus: ScoutFocus) async -> ExtractedSeed? {
+        // Unattended cloud synthesis sends the operator's taste/goals to a third-party
+        // LLM and spends money. The equivalent manual prototype-brief job always blocks
+        // on approval, so this must not be weaker: stay off until the operator has
+        // explicitly dropped the approval requirement. Default-safe → template instead.
+        guard !autonomyProfile.requireApprovalBeforeBuildHandoff else { return nil }
         let providers = ProviderFactory.defaultProviders(settings: providerSettings)
         let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: 600, outputTokens: 500)
         guard let provider = providers.first(where: { $0.providerName == route.provider }),
               let key = apiKey(for: provider.providerName),
               let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first,
-              canAffordSynthesis(estimatedCost: route.estimatedCostUSD ?? 0)
+              canAffordSynthesis(estimatedCost: route.estimatedCostUSD)
         else { return nil }
         do {
             guard let seed = try await AutonomousScout.synthesize(
@@ -1411,11 +1427,19 @@ public final class ShellViewModel: ObservableObject {
         }
     }
 
-    private func canAffordSynthesis(estimatedCost: Double) -> Bool {
+    /// True only when a priced cloud synthesis fits within BOTH the daily and monthly
+    /// spend caps. An unpriced model (nil estimate) is refused outright, so it can't
+    /// slip a real cloud call past the caps recorded as a phantom $0.
+    private func canAffordSynthesis(estimatedCost: Double?) -> Bool {
+        guard let estimatedCost else { return false }
         guard estimatedCost > 0 else { return true }
-        let day = Calendar.current.startOfDay(for: Date())
-        let spent = (try? store.usageTotalUSD(since: day)) ?? 0
-        return spent + estimatedCost <= schedulerSettings.dailySpendCapUSD
+        let calendar = Calendar.current
+        let day = calendar.startOfDay(for: Date())
+        let month = calendar.date(from: calendar.dateComponents([.year, .month], from: Date())) ?? day
+        let daySpent = (try? store.usageTotalUSD(since: day)) ?? 0
+        let monthSpent = (try? store.usageTotalUSD(since: month)) ?? 0
+        return daySpent + estimatedCost <= schedulerSettings.dailySpendCapUSD
+            && monthSpent + estimatedCost <= schedulerSettings.monthlySpendCapUSD
     }
 
     /// The self-tuning scout brief — derived live from what the operator has built,

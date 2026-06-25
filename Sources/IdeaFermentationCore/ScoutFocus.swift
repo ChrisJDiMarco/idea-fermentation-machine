@@ -58,20 +58,21 @@ public struct ScoutFocus: Equatable, Sendable {
     ) -> ScoutFocus {
         let outcomeByIdea = Dictionary(outcomes.map { ($0.ideaID, $0) }, uniquingKeysWith: { first, _ in first })
 
-        // Net signal per readable tag theme.
+        // Net signal per readable theme — restricted to real theme words (drops
+        // generic product/function filler like "app", "ai", "industry").
         var scores: [String: Double] = [:]
         for idea in ideas {
             let weight = signalWeight(for: idea, outcome: outcomeByIdea[idea.id])
             guard weight != 0 else { continue }
-            for tag in idea.manualTags.map({ $0.trimmingCharacters(in: .whitespaces).lowercased() }) where tag.count >= 2 {
+            for tag in idea.manualTags.map({ $0.trimmingCharacters(in: .whitespaces).lowercased() }) where TasteModel.isThemeWord(tag) {
                 scores[tag, default: 0] += weight
             }
         }
 
-        // Blend in the learned taste model on each tag's stem, so explicit decisions
-        // and accumulated micro-signals agree.
+        // Blend in the learned taste model (keyed on the same readable terms), so
+        // explicit decisions and accumulated micro-signals agree.
         for tag in scores.keys {
-            scores[tag, default: 0] += (taste.weights[Tokenizer.stem(tag)] ?? 0) * 0.5
+            scores[tag, default: 0] += (taste.weights[tag] ?? 0) * 0.5
         }
 
         let excluded = terms(profile.excludedTopics)

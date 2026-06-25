@@ -355,8 +355,12 @@ public final class FermentationEngine {
             + Double(interestOverlap) * 9
             + tagBoost)
 
-        let others = corpus.filter { $0.id != idea.id && !$0.embedding.isEmpty }
-        guard !idea.embedding.isEmpty, !others.isEmpty else { return lexical }
+        // A zero-magnitude vector (failed or empty embed) carries no semantic signal —
+        // cosine to it is 0, which would otherwise read as "maximally distant" and
+        // award full novelty. Treat it as no signal and fall back to the lexical cue.
+        func hasSignal(_ vector: [Double]) -> Bool { vector.contains { $0 != 0 } }
+        let others = corpus.filter { $0.id != idea.id && hasSignal($0.embedding) }
+        guard hasSignal(idea.embedding), !others.isEmpty else { return lexical }
 
         let nearest = others.map { LocalEmbeddings.cosine(idea.embedding, $0.embedding) }.max() ?? 0
         let distance = min(100, max(0, (1 - nearest) * 100))
@@ -390,11 +394,12 @@ public final class FermentationEngine {
             resonance = max(idea.personalResonance, tagBoost + 35)
         }
         // Phase 6 — fold in the self-tuning model learned from past approvals and
-        // archives. `learnedAffinity` is exactly 0 until something has been taught,
-        // so a fresh install scores identically to before and every existing test
-        // still holds. Applied before the exclusion cap so a written exclusion
-        // always overrides a learned preference.
-        let affinity = taste.learnedAffinity(tokens)
+        // archives. Matched on the same curated theme terms the model learns over
+        // (tags + title), so the affinity reflects real themes, not body filler.
+        // Exactly 0 until something has been taught, so a fresh install scores
+        // identically. Applied before the exclusion cap so a written exclusion always
+        // overrides a learned preference.
+        let affinity = taste.learnedAffinity(TasteModel.themeTerms(title: idea.title, tags: idea.manualTags))
         resonance = min(100, max(0, resonance + affinity * Self.learnedResonanceWeight))
         // Explicitly excluded topics should never resonate — and so never ripen.
         if taste.isExcluded(tokens) {

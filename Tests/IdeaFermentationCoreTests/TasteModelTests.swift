@@ -47,6 +47,28 @@ struct TasteModelTests {
         #expect(themes.disliked.allSatisfy { $0.weight < 0 })
     }
 
+    @Test func genericFillerNeverBecomesATheme() {
+        let terms = TasteModel.themeTerms(title: "A simple new AI app for the industry", tags: ["app", "ai", "productivity"])
+        #expect(terms.contains("productivity"))   // the one real theme survives
+        #expect(!terms.contains("app"))            // generic product words filtered
+        #expect(!terms.contains("ai"))
+        #expect(!terms.contains("simple"))
+        #expect(!terms.contains("new"))
+        #expect(!terms.contains("industry"))
+        #expect(!terms.contains("for"))            // function words filtered
+        #expect(!terms.contains("the"))
+    }
+
+    @Test func reinforcementOnlyLearnsAndDisplaysRealThemes() {
+        var model = TasteModel()
+        let terms = TasteModel.themeTerms(title: "Ambient memory recall app", tags: ["memory", "app"])
+        model = model.reinforced(with: terms, label: -1)
+        let disliked = model.topThemes().disliked.map(\.token)
+        #expect(disliked.contains("memory"))
+        #expect(disliked.contains("ambient"))
+        #expect(!disliked.contains("app"))         // never learned → never shown
+    }
+
     @Test func learnedTasteShiftsLocalRipenessBothWays() throws {
         func ripeness(with taste: TasteSignals) throws -> Double {
             let store = try makeStore()

@@ -62,6 +62,53 @@ public struct TasteModel: Codable, Equatable, Sendable {
         return tanh(total / 3.0)
     }
 
+    /// The readable theme words that represent an idea for taste learning — its tags
+    /// plus distinctive title words. Deliberately NOT the whole body and NOT stemmed:
+    /// learning over every body word let high-frequency filler ("yet", "app", "ai")
+    /// and stemming fragments ("ful") accumulate weight and masquerade as themes.
+    /// Tags are curated; titles are concise; the stoplist removes generic product and
+    /// function words. The result is meaningful, human-readable themes.
+    public static func themeTerms(title: String, tags: [String]) -> Set<String> {
+        var terms = Set<String>()
+        for tag in tags {
+            let cleaned = tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if isThemeWord(cleaned) { terms.insert(cleaned) }
+        }
+        for word in title.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted) {
+            if isThemeWord(word) { terms.insert(word) }
+        }
+        return terms
+    }
+
+    /// A theme is a content word that actually distinguishes one idea from another:
+    /// not a stopword, not a generic product/function word, not a fragment.
+    public static func isThemeWord(_ word: String) -> Bool {
+        word.count >= 3 && !Tokenizer.stopwords.contains(word) && !genericThemeStoplist.contains(word)
+    }
+
+    /// Words that appear across many ideas and therefore carry no taste signal —
+    /// generic product vocabulary plus common function words the base tokenizer's
+    /// (intentionally small) stoplist lets through.
+    public static let genericThemeStoplist: Set<String> = [
+        // generic product / idea vocabulary
+        "app", "apps", "application", "applications", "idea", "ideas", "tool", "tools",
+        "platform", "platforms", "system", "systems", "product", "products", "feature",
+        "features", "service", "services", "software", "website", "site", "api", "apis",
+        "data", "user", "users", "thing", "things", "stuff", "way", "ways", "use", "used",
+        "uses", "build", "builds", "building", "make", "makes", "making", "create",
+        "creates", "creating", "based", "powered", "using", "new", "simple", "easy",
+        "project", "projects", "concept", "concepts", "version", "approach", "solution",
+        "solutions", "ai", "llm", "llms", "gpt", "model", "models", "focus", "industry",
+        "general", "various", "different", "particular", "stack", "startup",
+        // common function words the base stoplist misses
+        "by", "with", "from", "into", "onto", "upon", "via", "per", "and", "but", "for",
+        "yet", "also", "just", "very", "much", "many", "most", "more", "less", "then",
+        "than", "once", "ever", "even", "still", "about", "over", "under", "after",
+        "before", "while", "during", "around", "across", "toward", "your", "our", "its",
+        "this", "that", "these", "those", "here", "there", "where", "what", "when",
+        "which", "who", "why", "how", "each", "every", "both", "few", "some", "any", "all"
+    ]
+
     /// Strongest liked and disliked themes for display, each strongest-first.
     public func topThemes(limit: Int = 6) -> (liked: [(token: String, weight: Double)], disliked: [(token: String, weight: Double)]) {
         let liked = weights
