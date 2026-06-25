@@ -1228,10 +1228,14 @@ struct ReadyRail: View {
                             }
                             Spacer()
                             Button("Start") { model.startLaunchStep(title) }
+                                .disabled(model.ready.items.isEmpty)
+                                .help(model.ready.items.isEmpty ? "No ideas are ready to build yet" : "Create a build brief for your top ready idea")
                         }
                     }
                     Button("↗  Open Launch Dashboard") { model.openLaunchDashboard() }
                         .frame(maxWidth: .infinity)
+                        .disabled(model.briefs.isEmpty)
+                        .help(model.briefs.isEmpty ? "No build plans yet — create one from a ready idea first" : "Export your build plans")
                 }
             }
         }

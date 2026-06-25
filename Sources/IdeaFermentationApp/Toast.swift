@@ -47,15 +47,15 @@ enum ToastTone: Equatable {
         let m = message.lowercased()
         func has(_ keywords: [String]) -> Bool { keywords.contains { m.contains($0) } }
 
-        if has(["no pending notifications", "no pending"]) { return .info }
+        if has(["no pending notifications", "no pending", "no ideas", "nothing"]) { return .info }
         if has([
             "already", "needs approval", "need approval", "cap reached", "blocked",
             "remove the", "before approving", "add a ", "add an ", "api key",
             "enable an", "running jobs finish", "before they can pause"
         ]) { return .warning }
         if has([
-            "created", "queued", "imported", "generated", "saved",
-            "exported", "duplicated", "ready to build", "recorded"
+            "created", "queued", "imported", "generated", "saved", "exported",
+            "duplicated", "ready to build", "recorded", "complete", "scored"
         ]) { return .success }
         return .error
     }

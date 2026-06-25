@@ -103,6 +103,32 @@ struct ShellViewModelTests {
         #expect(model.tasteModel.affinity(for: ["memory"]) < 0)
     }
 
+    @Test func launchStepCreatesNothingWhenNoIdeaIsReady() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        // An idea exists but is archived — definitely not "ready". The old code would
+        // grab it and create a build plan anyway; the fix must not.
+        model.addIdea(title: "An inbox idea", body: "not ready", tags: "x")
+        model.archiveIdea(try #require(model.ideas.first))
+
+        #expect(model.ready.items.isEmpty)
+        model.startLaunchStep("Prototype")
+
+        #expect(model.briefs.isEmpty)
+        #expect(model.errorMessage?.contains("Nothing is ready") == true)
+    }
+
+    @Test func localPassWithNoIdeasGuidesInsteadOfRunning() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        #expect(model.ideas.isEmpty)
+
+        model.runLocalFermentation()
+
+        #expect(model.logs.isEmpty)   // nothing actually ran
+        #expect(model.errorMessage?.contains("No ideas to ferment") == true)
+    }
+
     @Test func schedulerSettingsUpdateViewModel() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store)

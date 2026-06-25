@@ -85,6 +85,12 @@ struct ToastToneTests {
 
         // Info
         #expect(ToastTone.classify("No pending notifications.") == .info)
+        #expect(ToastTone.classify("Nothing is ready to build yet. Capture an idea first.") == .info)
+        #expect(ToastTone.classify("No ideas to ferment yet. Capture a seed in the Inbox first.") == .info)
+
+        // Result confirmations
+        #expect(ToastTone.classify("Local pass complete — scored 3 ideas. Ripe ones move to Ready.") == .success)
+        #expect(ToastTone.classify("Queued 5 cloud jobs. Track them in the Cost Center.") == .success)
     }
 
     @Test func unknownMessagesDefaultToError() {

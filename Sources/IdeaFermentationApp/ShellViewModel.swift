@@ -367,8 +367,11 @@ public final class ShellViewModel: ObservableObject {
     public func queueFermentationLoop() {
         do {
             let engine = makeEngine()
-            _ = try engine.queueLoop(maxJobs: 12)
+            let jobs = try engine.queueLoop(maxJobs: 12)
             reload()
+            errorMessage = jobs.isEmpty
+                ? "Nothing to queue yet. Capture ideas or sources first, then queue a cloud loop."
+                : "Queued \(jobs.count) cloud job\(jobs.count == 1 ? "" : "s"). Track them in the Cost Center."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -383,10 +386,16 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func runLocalFermentation() {
+        guard !ideas.isEmpty else {
+            selectedPage = .inbox
+            errorMessage = "No ideas to ferment yet. Capture a seed in the Inbox first, then run a local pass."
+            return
+        }
         do {
             let engine = makeEngine()
-            _ = try engine.runLocalPass(maxIdeas: 50)
+            let updated = try engine.runLocalPass(maxIdeas: 50)
             reload()
+            errorMessage = "Local pass complete — scored \(updated.count) idea\(updated.count == 1 ? "" : "s"). Ripe ones move to Ripening and Ready."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -593,7 +602,7 @@ public final class ShellViewModel: ObservableObject {
             reinforceTaste(with: idea, label: 1)
             selectedPage = .ready
             reload()
-            errorMessage = "Build plan created for \(idea.title)."
+            errorMessage = "Build plan created for \(idea.title). Open it from the idea's card here on the Ready page."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -675,20 +684,25 @@ public final class ShellViewModel: ObservableObject {
     public func addLessonFromArchive() {
         do {
             guard let idea = archive.items.first else {
-                errorMessage = "Archive an idea before adding a lesson."
+                errorMessage = "Nothing archived yet. Archive or record an outcome on an idea first, then its lesson can be composted here."
                 return
             }
             _ = try store.createSource(SourceItem(type: .note, title: "Lesson: \(idea.title)", body: "Archived lesson from \(idea.title): \(idea.body)", extractionStatus: .captured))
             selectedPage = .sources
             reload()
+            errorMessage = "Lesson from \(idea.title) saved to Sources."
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
     public func startLaunchStep(_ title: String) {
-        guard let idea = ready.items.first ?? ideas.sorted(by: { $0.ripeness > $1.ripeness }).first else {
-            errorMessage = "Add or ripen an idea before starting \(title)."
+        // The launch path only applies to ideas that have actually reached Ready —
+        // don't quietly grab an archived or half-baked idea just to have something to
+        // act on. With nothing ready, say so and point the operator at the next step.
+        guard let idea = ready.items.first else {
+            selectedPage = .ready
+            errorMessage = "Nothing is ready to build yet. Capture an idea in the Inbox and run a local pass — ready ideas appear here first, then \(title) can begin."
             return
         }
         createBuildPlan(for: idea)
