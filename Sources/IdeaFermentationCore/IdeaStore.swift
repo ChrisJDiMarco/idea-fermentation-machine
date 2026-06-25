@@ -949,6 +949,14 @@ public final class IdeaStore {
         try saveSetting("scout_missions", missions)
     }
 
+    public func loadTasteModel() throws -> TasteModel {
+        try loadSetting("taste_model", defaultValue: TasteModel())
+    }
+
+    public func saveTasteModel(_ model: TasteModel) throws {
+        try saveSetting("taste_model", model)
+    }
+
     public func loadCaptureServerConfig() throws -> CaptureServerConfig {
         try loadSetting("capture_server", defaultValue: CaptureServerConfig())
     }

@@ -13,17 +13,22 @@ public struct TasteSignals: Equatable, Sendable {
     public var interests: Set<String>
     /// Stemmed tokens the operator has explicitly excluded.
     public var exclusions: Set<String>
+    /// The self-tuning model learned from the operator's own decisions. Empty by
+    /// default, so it never affects scoring until something has been learned.
+    public var learned: TasteModel
 
     public var isActive: Bool { !interests.isEmpty || !exclusions.isEmpty }
 
-    public init(interests: Set<String> = [], exclusions: Set<String> = []) {
+    public init(interests: Set<String> = [], exclusions: Set<String> = [], learned: TasteModel = TasteModel()) {
         self.interests = interests
         self.exclusions = exclusions
+        self.learned = learned
     }
 
-    public init(profile: AutonomyProfile) {
+    public init(profile: AutonomyProfile, learned: TasteModel = TasteModel()) {
         self.interests = Tokenizer.vocabulary("\(profile.watchTopics) \(profile.tasteNotes) \(profile.goals)")
         self.exclusions = Tokenizer.vocabulary(profile.excludedTopics)
+        self.learned = learned
     }
 
     /// How many of the idea's tokens land in the operator's interest set.
@@ -34,5 +39,11 @@ public struct TasteSignals: Equatable, Sendable {
     /// Whether the idea touches an explicitly excluded topic.
     public func isExcluded(_ tokens: Set<String>) -> Bool {
         !exclusions.isEmpty && !tokens.isDisjoint(with: exclusions)
+    }
+
+    /// Bounded affinity from the self-tuning model — how much the operator's past
+    /// decisions imply they'd like this idea. 0 when nothing has been learned.
+    public func learnedAffinity(_ tokens: Set<String>) -> Double {
+        learned.affinity(for: tokens)
     }
 }

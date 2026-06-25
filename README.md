@@ -21,6 +21,8 @@ Implemented user-facing surfaces:
 - Local fermentation pass
 - Cloud job queue and approvals
 - Patterns
+- Autonomy: scout missions, editable taste profile, and a self-tuning Learned
+  Taste model that adapts local scoring to what you mark Ready, build, or archive
 - Settings and Keychain-backed provider keys
 - Cost Center
 - Privacy Center

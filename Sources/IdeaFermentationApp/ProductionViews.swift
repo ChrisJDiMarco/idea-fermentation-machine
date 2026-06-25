@@ -367,6 +367,8 @@ struct AutonomyPage: View {
                     }
                 }
 
+                LearnedTasteCard(model: model)
+
                 IFMCard {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
@@ -476,6 +478,68 @@ struct ScoutMissionRow: View {
         guard let lastRunAt = mission.lastRunAt else { return "Due now" }
         let next = Date(timeInterval: Double(max(1, mission.cadenceHours) * 60 * 60), since: lastRunAt)
         return next <= Date() ? "Due now" : "Next \(Self.dateFormatter.string(from: next))"
+    }
+}
+
+struct LearnedTasteCard: View {
+    @ObservedObject var model: ShellViewModel
+    @State private var confirmingReset = false
+
+    var body: some View {
+        IFMCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Learned Taste").font(.headline)
+                        Text("Tunes itself from what you mark Ready, build, or archive — no editing required.")
+                            .font(.caption)
+                            .foregroundStyle(IFMTheme.muted)
+                    }
+                    Spacer()
+                    Pill(text: "\(model.tasteModel.observations) signal\(model.tasteModel.observations == 1 ? "" : "s")", color: IFMTheme.purple)
+                }
+
+                if model.tasteModel.isEmpty {
+                    Text("Nothing learned yet. Mark an idea Ready or archive one and local scoring starts adapting to your choices.")
+                        .font(.caption)
+                        .foregroundStyle(IFMTheme.muted)
+                        .padding(.vertical, 2)
+                } else {
+                    let themes = model.tasteModel.topThemes(limit: 8)
+                    if !themes.liked.isEmpty {
+                        themeRow(title: "Leaning toward", color: IFMTheme.green, tokens: themes.liked.map(\.token))
+                    }
+                    if !themes.disliked.isEmpty {
+                        themeRow(title: "Leaning away from", color: IFMTheme.red, tokens: themes.disliked.map(\.token))
+                    }
+                    HStack {
+                        Spacer()
+                        Button("Reset Learned Taste", role: .destructive) { confirmingReset = true }
+                            .font(.caption)
+                    }
+                }
+            }
+        }
+        .confirmationDialog("Reset learned taste?", isPresented: $confirmingReset, titleVisibility: .visible) {
+            Button("Reset Learned Taste", role: .destructive) { model.resetLearnedTaste() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Forgets every theme learned from your past decisions. Your written taste profile above is unaffected.")
+        }
+    }
+
+    private func themeRow(title: String, color: Color, tokens: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption.bold()).foregroundStyle(color)
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(tokens, id: \.self) { token in
+                        Pill(text: token.capitalized, color: color)
+                    }
+                }
+            }
+            .scrollIndicators(.never)
+        }
     }
 }
 

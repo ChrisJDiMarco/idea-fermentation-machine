@@ -193,6 +193,7 @@ public final class ShellViewModel: ObservableObject {
     @Published var connections: [IdeaConnection] = []
     @Published var briefs: [PrototypeBrief] = []
     @Published var critiques: [IdeaCritique] = []
+    @Published var tasteModel = TasteModel()
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -251,6 +252,7 @@ public final class ShellViewModel: ObservableObject {
             providerSettings = try store.loadProviderSettings()
             autonomyProfile = try store.loadAutonomyProfile()
             scoutMissions = try store.loadScoutMissions()
+            tasteModel = try store.loadTasteModel()
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {
@@ -516,11 +518,17 @@ public final class ShellViewModel: ObservableObject {
             $0.stage = .readyToPrototype
             $0.ripeness = max($0.ripeness, 80)
         }
+        reinforceTaste(with: idea, label: 1)
     }
 
     public func archiveIdea(_ idea: IdeaSeed) {
         updateIdea(idea) {
             $0.status = .archived
+        }
+        // Archiving a Ready idea usually means it shipped or moved on, not a
+        // rejection — so only treat archiving an *unripe* idea as a negative signal.
+        if idea.status != .ready {
+            reinforceTaste(with: idea, label: -1)
         }
     }
 
@@ -533,6 +541,9 @@ public final class ShellViewModel: ObservableObject {
 
     public func deleteIdea(_ idea: IdeaSeed) {
         do {
+            if idea.status != .ready {
+                reinforceTaste(with: idea, label: -1)
+            }
             try store.deleteIdea(idea.id)
             reload()
         } catch {
@@ -560,6 +571,7 @@ public final class ShellViewModel: ObservableObject {
             }
             let brief = buildPlanBrief(for: idea)
             try store.savePrototypeBrief(brief)
+            reinforceTaste(with: idea, label: 1)
             selectedPage = .ready
             reload()
             errorMessage = "Build plan created for \(idea.title)."
@@ -1220,7 +1232,36 @@ public final class ShellViewModel: ObservableObject {
     /// A fermentation engine wired with the operator's taste profile (so local
     /// scoring reflects what they actually care about) and key-aware routing.
     private func makeEngine() -> FermentationEngine {
-        FermentationEngine(store: store, router: makeRouter(), taste: TasteSignals(profile: autonomyProfile))
+        FermentationEngine(store: store, router: makeRouter(), taste: TasteSignals(profile: autonomyProfile, learned: tasteModel))
+    }
+
+    // MARK: Learning loop (Phase 6)
+
+    /// Records a taste signal from one of the operator's decisions: +1 when they
+    /// commit to an idea (mark Ready, build), −1 when they let an unripe idea die.
+    /// The next local pass scores similar ideas accordingly — the taste profile
+    /// tuning itself instead of being hand-edited.
+    private func reinforceTaste(with idea: IdeaSeed, label: Double) {
+        guard label != 0 else { return }
+        do {
+            let tokens = Tokenizer.vocabulary("\(idea.title) \(idea.body) \(idea.manualTags.joined(separator: " "))")
+            guard !tokens.isEmpty else { return }
+            let updated = try store.loadTasteModel().reinforced(with: tokens, label: label)
+            try store.saveTasteModel(updated)
+            tasteModel = updated
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    public func resetLearnedTaste() {
+        do {
+            try store.saveTasteModel(TasteModel())
+            tasteModel = TasteModel()
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     private static func safeFileName(_ raw: String) -> String {

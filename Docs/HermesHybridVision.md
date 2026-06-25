@@ -133,8 +133,14 @@ Idea Fermentation Machine should become a local-first autonomous thinking agent,
   - Add evidence graph, contradiction list, source trail, ripeness history, and prototype brief.
 - Phase 5: Mockup and build handoff.
   - Generate screen concepts and export implementation packets for Codex/Claude Code.
-- Phase 6: Learning loop.
-  - Learn from approvals, edits, archives, and successful builds; update scout briefs and scoring weights.
+- Phase 6: Learning loop. **(implemented — scoring-weight half)**
+  - A local, online-learned `TasteModel` updates per-theme weights from the
+    operator's own decisions: marking Ready / building an idea reinforces its
+    themes (+), archiving or deleting an unripe idea suppresses them (−). The
+    local fermentation pass folds the resulting bounded affinity into resonance,
+    so scoring self-tunes toward what the operator actually commits to. An
+    untrained model is a strict no-op. Surfaced + resettable in Autonomy →
+    Learned Taste. Still to do: tune scout briefs from the same signal.
 
 ## Guardrails
 

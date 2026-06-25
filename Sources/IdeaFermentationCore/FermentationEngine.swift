@@ -336,6 +336,11 @@ public final class FermentationEngine {
     private static let noveltyWords = Set(["ai", "agent", "ambient", "private", "local", "memory", "taste", "context", "model", "autonomous"].map(Tokenizer.stem))
     private static let prototypeWords = Set(["prototype", "mvp", "build", "launch", "user", "workflow", "test", "ship", "demo"].map(Tokenizer.stem))
 
+    /// How many resonance points a fully-saturated learned affinity (±1) moves an
+    /// idea. Bounded so the learning loop nudges scores without overwhelming the
+    /// other five axes — at most ±~3.7 ripeness once averaged across the six.
+    private static let learnedResonanceWeight = 22.0
+
     private func localUpdate(_ idea: IdeaSeed) -> IdeaSeed {
         var next = idea
         let tokens = Tokenizer.vocabulary("\(idea.title) \(idea.body) \(idea.manualTags.joined(separator: " "))")
@@ -363,6 +368,13 @@ public final class FermentationEngine {
         } else {
             resonance = max(idea.personalResonance, tagBoost + 35)
         }
+        // Phase 6 — fold in the self-tuning model learned from past approvals and
+        // archives. `learnedAffinity` is exactly 0 until something has been taught,
+        // so a fresh install scores identically to before and every existing test
+        // still holds. Applied before the exclusion cap so a written exclusion
+        // always overrides a learned preference.
+        let affinity = taste.learnedAffinity(tokens)
+        resonance = min(100, max(0, resonance + affinity * Self.learnedResonanceWeight))
         // Explicitly excluded topics should never resonate — and so never ripen.
         if taste.isExcluded(tokens) {
             resonance = min(resonance, 12)

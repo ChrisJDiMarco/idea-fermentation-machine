@@ -45,6 +45,23 @@ struct ShellViewModelTests {
         #expect(model.logs.count == 1)
     }
 
+    @Test func decisionsTeachAndResetTheTasteModel() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        model.addIdea(title: "Ambient memory recall", body: "A private local recall app for daily context.", tags: "memory, privacy")
+        let idea = try #require(model.ideas.first)
+
+        #expect(model.tasteModel.observations == 0)
+        model.markIdeaReady(idea)                       // committing is a positive signal
+        #expect(model.tasteModel.observations == 1)
+        #expect(model.tasteModel.isEmpty == false)
+        #expect(model.tasteModel.affinity(for: ["memory"]) > 0)
+
+        model.resetLearnedTaste()
+        #expect(model.tasteModel.isEmpty)
+        #expect(try store.loadTasteModel().isEmpty)
+    }
+
     @Test func schedulerSettingsUpdateViewModel() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store)
