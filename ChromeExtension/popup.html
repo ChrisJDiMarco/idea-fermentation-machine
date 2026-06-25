@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">⚗</span>
+      <span class="brand-name">Idea Fermentation</span>
+    </div>
+    <button id="open-options" class="link-btn" title="Connection settings">⚙</button>
+  </header>
+
+  <div id="disconnected" class="banner hidden">
+    <strong>Not connected.</strong>
+    <span>Open the app, then <a href="#" id="pair-link">pair the extension</a>.</span>
+  </div>
+
+  <main id="capture-view">
+    <section class="preview">
+      <img id="favicon" class="favicon" alt="" />
+      <div class="preview-text">
+        <div id="title" class="title">Reading page…</div>
+        <div id="host" class="host"></div>
+      </div>
+    </section>
+
+    <div id="kind-chip" class="chip hidden"></div>
+
+    <label class="field">
+      <span class="field-label">Note (optional)</span>
+      <textarea id="note" rows="2" placeholder="Why this matters…"></textarea>
+    </label>
+
+    <label class="field">
+      <span class="field-label">Tags (comma separated)</span>
+      <input id="tags" type="text" placeholder="ai, agents, memory" />
+    </label>
+
+    <div class="row">
+      <div class="segmented" id="save-as">
+        <button data-mode="source" class="seg active">Source</button>
+        <button data-mode="idea" class="seg">Idea</button>
+      </div>
+      <label class="check">
+        <input id="never-send" type="checkbox" />
+        <span>Never send to cloud</span>
+      </label>
+    </div>
+
+    <button id="save" class="save-btn">Save to App</button>
+  </main>
+
+  <section id="result-view" class="hidden">
+    <div class="result-icon" id="result-icon">✓</div>
+    <div id="result-message" class="result-message"></div>
+    <div id="result-tags" class="chips"></div>
+    <div id="result-linked" class="linked"></div>
+    <button id="done" class="save-btn ghost">Done</button>
+  </section>
+
+  <div id="error" class="error hidden"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

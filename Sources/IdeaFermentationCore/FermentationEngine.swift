@@ -1,0 +1,391 @@
+import Foundation
+
+public struct AgentPromptFactory: Sendable {
+    public init() {}
+
+    public func prompt(for taskClass: ModelTaskClass) -> String {
+        switch taskClass {
+        case .extract: "Extract concise idea seeds from raw material. Return JSON matching ExtractedSeed."
+        case .tag: "Tag this idea with concise themes, domains, tone, and project relevance. Return JSON matching TagResult."
+        case .summarize: "Summarize this source into reusable evidence for idea development. Return JSON matching SourceSummary."
+        case .connect: "Find surprising but defensible connections to adjacent ideas and sources. Return JSON array of ConnectionCandidate."
+        case .critique: "Identify weak assumptions, objections, missing context, and contradictions. Return JSON matching CritiqueResult."
+        case .scoreRipeness: "Score novelty, clarity, evidence, resonance, feasibility, and timing from 0-100. Return JSON matching RipenessResult."
+        case .prototypeBrief: "Create a concise build-ready prototype brief with MVP scope, risks, and next actions. Return JSON matching PrototypeBriefDraft."
+        }
+    }
+}
+
+@MainActor
+public final class FermentationEngine {
+    private let store: IdeaStore
+    private let promptFactory: AgentPromptFactory
+    private let router: ModelRouter
+    private let taste: TasteSignals
+
+    public init(
+        store: IdeaStore,
+        promptFactory: AgentPromptFactory = AgentPromptFactory(),
+        router: ModelRouter = ModelRouter(),
+        taste: TasteSignals = TasteSignals()
+    ) {
+        self.store = store
+        self.promptFactory = promptFactory
+        self.router = router
+        self.taste = taste
+    }
+
+    @discardableResult
+    public func queueLoop(maxJobs: Int = 25) throws -> [FermentationJob] {
+        let ideas = try store.listIdeas().prefix(maxJobs)
+        let run = FermentationRun(status: .pending)
+        var jobs: [FermentationJob] = []
+        for source in try store.listSources().filter({ $0.extractionStatus == .captured }).prefix(maxJobs) {
+            jobs.append(try store.enqueue(FermentationJob(sourceID: source.id, taskClass: .summarize, inputHash: TextHashing.sha256("summarize\n\(source.textHash)"), runID: run.id)))
+        }
+        for idea in ideas {
+            let task: ModelTaskClass = switch idea.status {
+            case .inbox: .tag
+            case .fermenting: .connect
+            case .ripening: .scoreRipeness
+            case .ready: .prototypeBrief
+            case .archived: .summarize
+            }
+            let input = "\(idea.title)\n\(idea.body)"
+            let inputTokens = CostEstimator.roughTokenCount(input)
+            let route = router.route(taskClass: task, inputTokens: inputTokens, outputTokens: 800)
+            let status: JobStatus = route.needsApproval ? .needsApproval : .pending
+            jobs.append(try store.enqueue(FermentationJob(
+                ideaID: idea.id,
+                taskClass: task,
+                status: status,
+                estimatedCostUSD: route.estimatedCostUSD ?? 0,
+                modelRoute: route,
+                inputHash: TextHashing.sha256("\(task.rawValue)\n\(input)"),
+                runID: run.id
+            )))
+        }
+        try store.saveRun(FermentationRun(id: run.id, status: .pending, jobIDs: jobs.map(\.id), totalEstimatedCostUSD: jobs.reduce(0) { $0 + $1.estimatedCostUSD }))
+        return jobs
+    }
+
+    @discardableResult
+    public func runLocalPass(maxIdeas: Int = 25) throws -> [IdeaSeed] {
+        let ideas = try store.listIdeas().prefix(maxIdeas)
+        return try ideas.map { idea in
+            let updated = localUpdate(idea)
+            try store.upsertIdea(updated)
+            try persistStructuredLocalResults(for: updated)
+            let job = try store.enqueue(FermentationJob(
+                ideaID: updated.id,
+                taskClass: .scoreRipeness,
+                status: .complete,
+                estimatedCostUSD: 0,
+                modelRoute: ModelRoute(
+                    provider: "Local",
+                    model: "heuristic-v1",
+                    taskClass: .scoreRipeness,
+                    rationale: "Local-only heuristic pass; use cloud models for deeper synthesis.",
+                    estimatedCostUSD: 0,
+                    needsApproval: false
+                ),
+                inputHash: TextHashing.sha256("local\n\(updated.title)\n\(updated.body)")
+            ))
+            try store.saveRunLog(AgentRunLog(
+                jobID: job.id,
+                agentName: "Local Fermentation Agent",
+                promptVersion: "local-v1",
+                inputTrace: updated.id.uuidString,
+                output: "Updated status to \(updated.status.rawValue), stage to \(updated.stage.rawValue), ripeness \(Int(updated.ripeness)).",
+                modelUsed: "Local/heuristic-v1"
+            ))
+            return updated
+        }
+    }
+
+    @discardableResult
+    public func runDueLocalJobs(maxJobs: Int = 25, now: Date = Date()) throws -> [FermentationJob] {
+        var completed: [FermentationJob] = []
+        for job in try store.dueJobs(limit: maxJobs, now: now) {
+            guard job.estimatedCostUSD == 0 || job.modelRoute?.provider == "Local" || job.sourceID != nil else { continue }
+            try store.markRunning(job.id, runID: job.runID)
+            do {
+                try completeLocal(job)
+                try store.markComplete(job.id)
+                completed.append(try store.job(id: job.id))
+            } catch {
+                try store.markFailed(job.id, error: error.localizedDescription, retryAfter: Date(timeInterval: 300, since: now))
+            }
+        }
+        return completed
+    }
+
+    public func tickScheduler(settings: SchedulerSettings, now: Date = Date()) throws -> SchedulerSettings {
+        var next = settings
+        guard settings.nextLocalRunAt == nil || settings.nextLocalRunAt! <= now else { return next }
+        _ = try runLocalPass(maxIdeas: settings.maxLocalJobsPerPass)
+        _ = try runDueLocalJobs(maxJobs: settings.maxLocalJobsPerPass, now: now)
+        next.nextLocalRunAt = Date(timeInterval: Double(settings.localCadenceMinutes * 60), since: now)
+        try store.saveSchedulerSettings(next)
+        return next
+    }
+
+    @discardableResult
+    public func runNext(provider: any LLMProvider, apiKey: String) async throws -> LLMResponse? {
+        guard let job = try store.nextRunnableJob() else { return nil }
+        let input = try input(for: job)
+        let cacheKey = TextHashing.sha256("\(job.taskClass.rawValue)\n\(input)")
+        if let cached = try store.cachedOutput(for: cacheKey) {
+            try complete(job: job, response: cached, cached: true)
+            return cached
+        }
+
+        let route = job.modelRoute ?? router.route(
+            taskClass: job.taskClass,
+            inputTokens: CostEstimator.roughTokenCount(input),
+            outputTokens: 800
+        )
+        guard !route.needsApproval else {
+            try store.setJobStatus(job.id, status: .needsApproval)
+            throw LLMProviderError.approvalRequired(route.estimatedCostUSD)
+        }
+        guard let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first else {
+            throw LLMProviderError.invalidResponse(provider.providerName)
+        }
+
+        try store.markRunning(job.id, runID: job.runID)
+        let request = LLMRequest(
+            taskClass: job.taskClass,
+            prompt: promptFactory.prompt(for: job.taskClass),
+            input: input,
+            maxOutputTokens: 1_000
+        )
+        do {
+            let response = try await provider.send(request, model: model, apiKey: apiKey)
+            try store.saveCache(key: cacheKey, response: response)
+            try complete(job: job, response: response, cached: false)
+            return response
+        } catch {
+            try store.markFailed(job.id, error: error.localizedDescription)
+            throw error
+        }
+    }
+
+    private func input(for job: FermentationJob) throws -> String {
+        let base: String
+        if let ideaID = job.ideaID {
+            let idea = try store.idea(id: ideaID)
+            let sources = try idea.sourceIDs.map { try store.source(id: $0) }
+            base = PrivacyPolicy.preview(idea: idea, sources: sources, taskClass: job.taskClass).payload
+        } else if let sourceID = job.sourceID {
+            let source = try store.source(id: sourceID)
+            base = "\(source.title)\n\(source.body)"
+        } else {
+            base = job.inputHash
+        }
+        return AgentLearning.appendContext(
+            to: base,
+            ideas: try store.listIdeas(),
+            sources: try store.listSources(),
+            logs: try store.runLogs(),
+            jobs: try store.listJobs(),
+            connections: try store.connections()
+        )
+    }
+
+    private func complete(job: FermentationJob, response: LLMResponse, cached: Bool) throws {
+        try persistStructuredResult(job: job, output: response.text)
+        try store.saveRunLog(AgentRunLog(
+            jobID: job.id,
+            agentName: agentName(for: job.taskClass),
+            promptVersion: "v1",
+            inputTrace: job.ideaID?.uuidString ?? job.sourceID?.uuidString ?? job.id.uuidString,
+            output: response.text,
+            modelUsed: cached ? "\(response.provider)/\(response.model) cached" : "\(response.provider)/\(response.model)"
+        ))
+        try store.saveUsage(LLMUsageRecord(
+            provider: response.provider,
+            model: response.model,
+            taskClass: job.taskClass,
+            inputTokens: response.inputTokens,
+            outputTokens: response.outputTokens,
+            estimatedCostUSD: job.estimatedCostUSD
+        ))
+        try store.markComplete(job.id)
+    }
+
+    private func completeLocal(_ job: FermentationJob) throws {
+        if let sourceID = job.sourceID {
+            let source = try store.source(id: sourceID)
+            let summary = AgentResultInterpreter.sourceSummary(for: source, ideas: try store.listIdeas())
+            var next = source
+            next.extractionStatus = .connected
+            next.linkedIdeaIDs = summary.linkedIdeaIDs
+            try store.upsertSource(next)
+            try store.saveRunLog(AgentRunLog(jobID: job.id, agentName: "Local Source Agent", promptVersion: "local-v2", inputTrace: sourceID.uuidString, output: summary.summary, modelUsed: "Local/heuristic-v2"))
+        } else if let ideaID = job.ideaID {
+            let idea = localUpdate(try store.idea(id: ideaID))
+            try store.upsertIdea(idea)
+            try persistStructuredLocalResults(for: idea)
+            try store.saveRunLog(AgentRunLog(jobID: job.id, agentName: "Local Fermentation Agent", promptVersion: "local-v2", inputTrace: ideaID.uuidString, output: "Updated \(idea.title) to ripeness \(Int(idea.ripeness)).", modelUsed: "Local/heuristic-v2"))
+        }
+    }
+
+    private func persistStructuredResult(job: FermentationJob, output: String) throws {
+        if let sourceID = job.sourceID {
+            var source = try store.source(id: sourceID)
+            let summary = AgentResultInterpreter.sourceSummary(for: source, ideas: try store.listIdeas(), output: output)
+            source.body = source.body.isEmpty ? summary.summary : source.body
+            source.extractionStatus = .connected
+            source.linkedIdeaIDs = summary.linkedIdeaIDs
+            try store.upsertSource(source)
+            return
+        }
+        guard let ideaID = job.ideaID else { return }
+        var idea = try store.idea(id: ideaID)
+        switch job.taskClass {
+        case .tag, .extract:
+            let result = AgentResultInterpreter.tagResult(for: idea, output: output)
+            idea.manualTags = Array(Set(idea.manualTags + result.tags)).sorted()
+            if idea.body.isEmpty { idea.body = result.summary }
+            try store.upsertIdea(idea)
+        case .connect:
+            for connection in AgentResultInterpreter.connections(for: idea, candidates: try store.listIdeas(), output: output) {
+                try store.saveConnection(IdeaConnection(fromID: connection.fromID, toID: connection.toID, explanation: connection.explanation, confidence: connection.confidence))
+            }
+        case .critique:
+            let result = AgentResultInterpreter.critique(for: idea, output: output)
+            try store.saveCritique(IdeaCritique(
+                ideaID: idea.id,
+                assumptions: result.assumptions,
+                risks: result.risks,
+                contradictions: result.contradictions,
+                source: "\(job.modelRoute?.provider ?? "Cloud")/\(job.modelRoute?.model ?? "model")"
+            ))
+        case .scoreRipeness:
+            let result = AgentResultInterpreter.ripeness(for: idea, output: output)
+            try applyRipeness(result, to: &idea)
+            try store.upsertIdea(idea)
+        case .prototypeBrief:
+            let draft = AgentResultInterpreter.brief(for: idea, output: output)
+            try store.savePrototypeBrief(PrototypeBrief(ideaID: idea.id, audience: draft.audience, mvpScope: draft.mvpScope, risks: draft.risks, nextActions: draft.nextActions, markdown: draft.markdown))
+        case .summarize:
+            break
+        }
+    }
+
+    private func persistStructuredLocalResults(for idea: IdeaSeed) throws {
+        let ripeness = AgentResultInterpreter.ripeness(for: idea)
+        try store.saveRipenessScore(RipenessScore(ideaID: idea.id, novelty: ripeness.novelty, clarity: ripeness.clarity, evidence: ripeness.evidence, personalResonance: ripeness.personalResonance, feasibility: ripeness.feasibility, timing: ripeness.timing))
+        for connection in AgentResultInterpreter.connections(for: idea, candidates: try store.listIdeas()) {
+            try store.saveConnection(IdeaConnection(fromID: connection.fromID, toID: connection.toID, explanation: connection.explanation, confidence: connection.confidence))
+        }
+        // Give every idea a baseline heuristic critique so the Contradictions panes
+        // are never empty in pure local mode — but never clobber a richer cloud
+        // critique that already exists.
+        if try store.critique(for: idea.id) == nil {
+            let critique = AgentResultInterpreter.critique(for: idea)
+            try store.saveCritique(IdeaCritique(
+                ideaID: idea.id,
+                assumptions: critique.assumptions,
+                risks: critique.risks,
+                contradictions: critique.contradictions,
+                source: "local"
+            ))
+        }
+        if idea.status == .ready {
+            let draft = AgentResultInterpreter.brief(for: idea)
+            try store.savePrototypeBrief(PrototypeBrief(ideaID: idea.id, audience: draft.audience, mvpScope: draft.mvpScope, risks: draft.risks, nextActions: draft.nextActions, markdown: draft.markdown))
+        }
+    }
+
+    private func applyRipeness(_ result: RipenessResult, to idea: inout IdeaSeed) throws {
+        idea.novelty = result.novelty
+        idea.evidence = result.evidence
+        idea.personalResonance = result.personalResonance
+        idea.feasibility = result.feasibility
+        idea.timing = result.timing
+        idea.ripeness = min(100, result.average)
+        idea.updatedAt = Date()
+        if idea.ripeness >= 78 {
+            idea.status = .ready
+            idea.stage = .readyToPrototype
+        } else if idea.ripeness >= 55 {
+            idea.status = .ripening
+            idea.stage = .brewing
+        }
+        try store.saveRipenessScore(RipenessScore(ideaID: idea.id, novelty: result.novelty, clarity: result.clarity, evidence: result.evidence, personalResonance: result.personalResonance, feasibility: result.feasibility, timing: result.timing))
+    }
+
+    private func agentName(for taskClass: ModelTaskClass) -> String {
+        switch taskClass {
+        case .extract: "Capture Triage Agent"
+        case .tag: "Tagging Agent"
+        case .summarize: "Archivist Agent"
+        case .connect: "Connector Agent"
+        case .critique: "Critic Agent"
+        case .scoreRipeness: "Ripeness Agent"
+        case .prototypeBrief: "Prototype Agent"
+        }
+    }
+
+    /// Generic signal lexicons, stemmed so they line up with `Tokenizer` output.
+    /// These are a floor; the operator's own taste profile layers on top.
+    private static let noveltyWords = Set(["ai", "agent", "ambient", "private", "local", "memory", "taste", "context", "model", "autonomous"].map(Tokenizer.stem))
+    private static let prototypeWords = Set(["prototype", "mvp", "build", "launch", "user", "workflow", "test", "ship", "demo"].map(Tokenizer.stem))
+
+    private func localUpdate(_ idea: IdeaSeed) -> IdeaSeed {
+        var next = idea
+        let tokens = Tokenizer.vocabulary("\(idea.title) \(idea.body) \(idea.manualTags.joined(separator: " "))")
+        let sourceCount = idea.sourceIDs.count
+        let lengthBoost = min(25, Double(idea.body.count) / 40)
+        let tagBoost = min(15, Double(idea.manualTags.count * 3))
+        let interestOverlap = taste.interestOverlap(tokens)
+
+        // Each axis is scored on its own 0–100 scale so the 6-axis mean below is a
+        // fair blend (the old code capped evidence at 30, which silently dragged
+        // every ripeness score down).
+        let feasibility = min(100, 35 + lengthBoost + tagBoost + min(20, Double(sourceCount) * 5))
+        let evidence = min(100, Double(sourceCount) * 22 + (idea.body.isEmpty ? 0 : 8))
+        let clarity = AgentResultInterpreter.localClarity(for: idea)
+        let novelty = min(100, 22
+            + Double(tokens.intersection(Self.noveltyWords).count) * 12
+            + Double(interestOverlap) * 9
+            + tagBoost)
+        let timing = min(100, 30 + Double(tokens.intersection(Self.prototypeWords).count) * 10 + Double(sourceCount) * 6)
+
+        var resonance: Double
+        if taste.isActive {
+            // Taste-aware: ideas that hit the operator's watch topics resonate.
+            resonance = min(100, max(idea.personalResonance, 18 + Double(interestOverlap) * 16 + tagBoost * 0.5))
+        } else {
+            resonance = max(idea.personalResonance, tagBoost + 35)
+        }
+        // Explicitly excluded topics should never resonate — and so never ripen.
+        if taste.isExcluded(tokens) {
+            resonance = min(resonance, 12)
+        }
+
+        next.feasibility = feasibility
+        next.novelty = novelty
+        next.evidence = evidence
+        next.timing = timing
+        next.personalResonance = resonance
+        // Ripeness is the mean of all six axes, identical to `RipenessResult.average`
+        // and the cloud scoring path, so local and cloud promotion decisions agree.
+        next.ripeness = min(100, (novelty + clarity + evidence + resonance + feasibility + timing) / 6)
+        next.updatedAt = Date()
+
+        if next.ripeness >= 78 {
+            next.status = .ready
+            next.stage = .readyToPrototype
+        } else if next.ripeness >= 55 {
+            next.status = .ripening
+            next.stage = .brewing
+        } else if next.status == .inbox {
+            next.status = .fermenting
+            next.stage = .cooling
+        }
+        return next
+    }
+}

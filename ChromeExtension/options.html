@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="options.css" />
+</head>
+<body>
+  <main class="card">
+    <header class="head">
+      <span class="brand-mark">⚗</span>
+      <div>
+        <h1>Idea Fermentation Connector</h1>
+        <p class="sub">Pair this extension with the desktop app running on this Mac.</p>
+      </div>
+    </header>
+
+    <ol class="steps">
+      <li>Open <strong>Idea Fermentation Machine</strong> and go to <strong>Settings → Browser Connector</strong>.</li>
+      <li>Click <strong>Copy Token</strong> there and paste it below.</li>
+      <li>Press <strong>Test connection</strong>, then <strong>Save</strong>.</li>
+    </ol>
+
+    <label class="field">
+      <span>Host</span>
+      <input id="host" type="text" value="127.0.0.1" />
+    </label>
+    <label class="field">
+      <span>Port</span>
+      <input id="port" type="number" value="51720" />
+    </label>
+    <label class="field">
+      <span>Pairing token</span>
+      <input id="token" type="password" placeholder="Paste the token from the app" autocomplete="off" />
+    </label>
+
+    <div class="actions">
+      <button id="test" class="btn ghost">Test connection</button>
+      <button id="save" class="btn primary">Save</button>
+    </div>
+
+    <div id="status" class="status hidden"></div>
+  </main>
+
+  <script src="options.js"></script>
+</body>
+</html>
