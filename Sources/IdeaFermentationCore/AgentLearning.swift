@@ -17,11 +17,8 @@ public enum AgentLearning {
         // Defense in depth: an idea whose evidence includes a never-send source may
         // carry source-derived text in its body, so keep that body out of the cloud
         // digest. The idea's title still goes (the operator's own words), but the body
-        // is redacted for these ideas.
-        let neverSendSourceIDs = Set(sources.filter(\.neverSendToCloud).map(\.id))
-        let neverSendIdeaIDs = Set(
-            ideas.filter { !Set($0.sourceIDs).isDisjoint(with: neverSendSourceIDs) }.map(\.id)
-        )
+        // is redacted for these ideas. Checked in both link directions.
+        let neverSendIdeaIDs = neverSendDerivedIdeaIDs(ideas: ideas, sources: sources)
 
         notes += jobs
             .filter { $0.status == .failed && ($0.lastError?.isEmpty == false) }

@@ -1024,6 +1024,16 @@ public final class IdeaStore {
         try saveSetting("capture_server", config)
     }
 
+    /// The latest cross-idea reasoning pass. Only one is kept — it is a current
+    /// synthesis of the whole portfolio, not a history.
+    public func loadPortfolioReport() throws -> PortfolioReport? {
+        try loadSetting("portfolio_report_v1", defaultValue: nil as PortfolioReport?)
+    }
+
+    public func savePortfolioReport(_ report: PortfolioReport) throws {
+        try saveSetting("portfolio_report_v1", report)
+    }
+
     private func loadSetting<T: Codable>(_ key: String, defaultValue: T) throws -> T {
         guard let row = try db.query("SELECT value FROM app_settings WHERE key = ?", [.text(key)]).first else {
             return defaultValue

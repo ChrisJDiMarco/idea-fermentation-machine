@@ -1,3 +1,4 @@
+import IdeaFermentationCore
 import SwiftUI
 
 enum PatternLayout {
@@ -24,6 +25,8 @@ struct PatternsPage: View {
 
         PageScaffold(title: "Patterns", subtitle: "Recurring themes, loops, and connections across all your ideas and sources.", symbol: nil, accent: IFMTheme.green) {
             VStack(spacing: 14) {
+                PortfolioIntelligenceCard(model: model)
+
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 10) {
                         Spacer(minLength: 0)
@@ -666,6 +669,234 @@ private struct PatternStatsCard: View {
                 .foregroundStyle(IFMTheme.muted)
         }
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Portfolio Intelligence (cross-idea reasoning)
+
+struct PortfolioIntelligenceCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        IFMCard(padding: 18) {
+            VStack(alignment: .leading, spacing: 14) {
+                header
+                if let report = model.portfolioReport, !report.isEmpty {
+                    content(report)
+                } else {
+                    emptyState
+                }
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .center, spacing: 12) {
+            SymbolBadge(symbol: "brain.head.profile", color: IFMTheme.purple, size: 44)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Portfolio Intelligence")
+                    .font(.system(size: 18, weight: .bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Text("Reasoning across every idea at once — not one by one.")
+                    .font(.caption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .lineLimit(2)
+            }
+            .frame(minWidth: 180, alignment: .leading)
+            Spacer(minLength: 8)
+            Button {
+                model.runPortfolioReasoning()
+            } label: {
+                HStack(spacing: 6) {
+                    if model.isRunningJob {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "sparkles")
+                    }
+                    Text(model.isRunningJob ? "Thinking…" : (model.portfolioReport == nil ? "Synthesize" : "Re-synthesize"))
+                        .fontWeight(.semibold)
+                        .lineLimit(1)
+                }
+                .frame(height: 30)
+                .padding(.horizontal, 12)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(model.isRunningJob || model.ideas.isEmpty)
+            .help("Reason across all ideas to find merges, tensions, blind spots, and what to build next.")
+            .accessibilityLabel("Synthesize portfolio")
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "brain")
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(IFMTheme.purple)
+            Text(model.ideas.isEmpty ? "Capture a few ideas first" : "No synthesis yet")
+                .font(.system(size: 15, weight: .semibold))
+            Text(model.ideas.isEmpty
+                 ? "The reasoning pass needs a handful of ideas before it can find merges, tensions, blind spots, and what to build next."
+                 : "Run a synthesis to see how your ideas connect, contradict, and combine — and the single one to build next.")
+                .font(.caption)
+                .foregroundStyle(IFMTheme.muted)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 460)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 16)
+    }
+
+    private func content(_ report: PortfolioReport) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Pill(text: report.source, color: report.source.hasPrefix("cloud") ? IFMTheme.green : IFMTheme.slate)
+                Text("Synthesized \(report.generatedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundStyle(IFMTheme.muted)
+                if model.portfolioReportIsStale {
+                    Label("Portfolio changed — re-synthesize", systemImage: "clock.badge.exclamationmark")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(IFMTheme.orange)
+                        .lineLimit(1)
+                }
+                Spacer()
+            }
+
+            if !report.summary.isEmpty {
+                Text(report.summary)
+                    .font(.system(size: 14))
+                    .foregroundStyle(IFMTheme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(IFMTheme.softPanel)
+                    .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+            }
+
+            if let buildNext = report.buildNext {
+                PortfolioBuildNextHero(insight: buildNext, model: model)
+            }
+
+            let supporting = report.supportingInsights
+            if !supporting.isEmpty {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 280), spacing: 12, alignment: .top)], spacing: 12) {
+                    ForEach(supporting) { insight in
+                        PortfolioInsightCard(insight: insight, model: model)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct PortfolioBuildNextHero: View {
+    var insight: PortfolioInsight
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Image(systemName: "bolt.fill").foregroundStyle(IFMTheme.green)
+                Text("BUILD NEXT")
+                    .font(.system(size: 11, weight: .heavy))
+                    .tracking(0.6)
+                    .foregroundStyle(IFMTheme.green)
+                Spacer()
+            }
+            Text(insight.headline)
+                .font(.system(size: 16, weight: .bold))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(insight.reasoning)
+                .font(.system(size: 13))
+                .foregroundStyle(IFMTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            PortfolioInsightChips(insight: insight, model: model)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(IFMTheme.green.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous).stroke(IFMTheme.green.opacity(0.30)) }
+    }
+}
+
+private struct PortfolioInsightCard: View {
+    var insight: PortfolioInsight
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        let accent = insightColor(insight.kind)
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 6) {
+                Image(systemName: insight.kind.symbol).font(.caption).foregroundStyle(accent)
+                Text(insight.kind.title.uppercased())
+                    .font(.system(size: 10, weight: .heavy))
+                    .tracking(0.5)
+                    .foregroundStyle(accent)
+                Spacer()
+            }
+            Text(insight.headline)
+                .font(.system(size: 13, weight: .semibold))
+                .fixedSize(horizontal: false, vertical: true)
+            Text(insight.reasoning)
+                .font(.caption)
+                .foregroundStyle(IFMTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+            PortfolioInsightChips(insight: insight, model: model)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
+        .background(IFMTheme.panelStrong)
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous).stroke(IFMTheme.border.opacity(0.8)) }
+    }
+}
+
+private struct PortfolioInsightChips: View {
+    var insight: PortfolioInsight
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        if !insight.relatedIdeaTitles.isEmpty {
+            let openable = Set(model.ideas.map { $0.title.lowercased() })
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(insight.relatedIdeaTitles.prefix(4), id: \.self) { title in
+                        let canOpen = openable.contains(title.lowercased())
+                        Button {
+                            if canOpen { model.focusIdea(titled: title) }
+                        } label: {
+                            HStack(spacing: 4) {
+                                if canOpen {
+                                    Image(systemName: "arrow.up.right").font(.system(size: 8, weight: .bold))
+                                }
+                                Text(title).font(.system(size: 10, weight: .medium)).lineLimit(1)
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(IFMTheme.canvas)
+                            .clipShape(Capsule())
+                            .overlay { Capsule().stroke(IFMTheme.border.opacity(0.7)) }
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canOpen)
+                        .help(canOpen ? "Open \(title)" : title)
+                    }
+                }
+                .padding(.top, 1)
+            }
+        }
+    }
+}
+
+private func insightColor(_ kind: PortfolioInsightKind) -> Color {
+    switch kind {
+    case .buildNext: IFMTheme.green
+    case .gap: IFMTheme.orange
+    case .contradiction: IFMTheme.red
+    case .merge: IFMTheme.purple
+    case .theme: IFMTheme.blue
     }
 }
 

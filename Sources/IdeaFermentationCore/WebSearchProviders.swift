@@ -96,6 +96,99 @@ public struct OpenAIWebSearchProvider: WebSearchProvider {
     }
 }
 
+public struct BeautifulSoupSearchProvider: WebSearchProvider {
+    public let providerName = "BeautifulSoup HTML Fallback"
+
+    public init() {}
+
+    public func search(query: String, limit: Int = 3, apiKey: String = "") async throws -> [ScoutSignal] {
+        guard var components = URLComponents(string: "https://duckduckgo.com/html/") else { return [] }
+        components.queryItems = [URLQueryItem(name: "q", value: query)]
+        guard let url = components.url else { return [] }
+        var request = URLRequest(url: url)
+        request.setValue("IdeaFermentationMachine/1.0 (+local scout; polite single-request fallback)", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html,application/xhtml+xml", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await IFMNetworking.session.data(for: request)
+        try validateSearchResponse(response, provider: providerName, data: data)
+        let html = String(data: data, encoding: .utf8) ?? ""
+        return Self.parseSignals(html: html, limit: min(max(limit, 1), 3))
+    }
+
+    static func parseSignals(html: String, limit: Int) -> [ScoutSignal] {
+        let pattern = #"<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>(.*?)</a>"#
+        let matches = regexMatches(pattern, in: html)
+        return matches.enumerated().compactMap { index, match in
+            guard index < limit,
+                  let href = capture(1, in: html, match: match),
+                  let titleHTML = capture(2, in: html, match: match)
+            else { return nil }
+            let tailStart = match.range.location + match.range.length
+            let tailEnd = index + 1 < matches.count ? matches[index + 1].range.location : html.utf16.count
+            let tail = substring(html, NSRange(location: tailStart, length: max(0, tailEnd - tailStart))) ?? ""
+            let title = htmlText(titleHTML)
+            let summary = snippet(from: tail) ?? extractedURL(from: href) ?? title
+            guard !title.isEmpty else { return nil }
+            return ScoutSignal(title: title, summary: summary, url: extractedURL(from: href), kind: .article)
+        }
+    }
+
+    private static func snippet(from html: String) -> String? {
+        let pattern = #"class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</"#
+        guard let match = regexMatches(pattern, in: html).first,
+              let raw = capture(1, in: html, match: match)
+        else { return nil }
+        let text = htmlText(raw)
+        return text.isEmpty ? nil : text
+    }
+
+    private static func extractedURL(from raw: String) -> String? {
+        var value = htmlDecode(raw)
+        if value.hasPrefix("//") { value = "https:" + value }
+        if value.hasPrefix("/") { value = "https://duckduckgo.com" + value }
+        guard let url = URL(string: value) else { return nil }
+        if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let decoded = components.queryItems?.first(where: { $0.name == "uddg" })?.value,
+           !decoded.isEmpty {
+            return decoded
+        }
+        return url.host?.contains("duckduckgo.com") == true ? nil : value
+    }
+
+    private static func htmlText(_ html: String) -> String {
+        collapseWhitespace(htmlDecode(html.replacingOccurrences(of: #"<[^>]+>"#, with: " ", options: .regularExpression)))
+    }
+
+    private static func htmlDecode(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+    }
+
+    private static func collapseWhitespace(_ text: String) -> String {
+        text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func regexMatches(_ pattern: String, in text: String) -> [NSTextCheckingResult] {
+        (try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators, .caseInsensitive]))
+            .map { $0.matches(in: text, range: NSRange(text.startIndex..., in: text)) } ?? []
+    }
+
+    private static func capture(_ index: Int, in text: String, match: NSTextCheckingResult) -> String? {
+        substring(text, match.range(at: index))
+    }
+
+    private static func substring(_ text: String, _ range: NSRange) -> String? {
+        guard let range = Range(range, in: text) else { return nil }
+        return String(text[range])
+    }
+}
+
 private struct FirecrawlSearchResponse: Decodable {
     var data: [FirecrawlSearchItem]
 }

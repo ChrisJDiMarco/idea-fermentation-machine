@@ -212,6 +212,7 @@ public final class ShellViewModel: ObservableObject {
     @Published var critiques: [IdeaCritique] = []
     @Published var tasteModel = TasteModel()
     @Published var buildOutcomes: [BuildOutcome] = []
+    @Published var portfolioReport: PortfolioReport?
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -285,6 +286,7 @@ public final class ShellViewModel: ObservableObject {
             scoutMissions = try store.loadScoutMissions()
             tasteModel = try store.loadTasteModel()
             buildOutcomes = try store.buildOutcomes()
+            portfolioReport = try store.loadPortfolioReport()
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {
@@ -555,6 +557,125 @@ public final class ShellViewModel: ObservableObject {
         }
     }
 
+    // MARK: Cross-idea reasoning
+
+    /// Reasons across the WHOLE portfolio at once — merges, tensions, blind spots, and
+    /// what to build next. Cloud-first on the strongest judgment model, with the
+    /// deterministic local report as the fallback. Same caps / reservation / privacy
+    /// discipline as the per-idea agents.
+    public func runPortfolioReasoning() {
+        guard !isRunningJob else {
+            errorMessage = "Another AI run is finishing — try again in a moment."
+            return
+        }
+        guard (try? store.listIdeas())?.isEmpty == false else {
+            selectedPage = .inbox
+            errorMessage = "No ideas to reason over yet. Capture a few seeds first, then synthesize."
+            return
+        }
+
+        let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: 1_200, outputTokens: 900)
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+
+        // No usable key → the local heuristic synthesis, instantly.
+        guard let provider = providers.first(where: { $0.providerName == route.provider }),
+              let key = apiKey(for: provider.providerName),
+              let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first
+        else {
+            saveLocalPortfolioReport(note: "Synthesized \(ideas.count) ideas locally — add a cloud key for the full reasoned pass.")
+            return
+        }
+        // Spend cap is the safety net: a priced run that would breach it falls back.
+        if let cost = route.estimatedCostUSD, !fitsSpendCaps(cost) {
+            saveLocalPortfolioReport(note: "Spend cap reached — synthesized \(ideas.count) ideas locally instead.")
+            return
+        }
+
+        let releaseReservation = reserveSpend(route.estimatedCostUSD)
+        isRunningJob = true
+        // Reason over the WHOLE portfolio from the store, never the search-filtered
+        // `ideas` view — otherwise an active search silently shrinks the synthesis.
+        let snapshotIdeas = (try? store.listIdeas()) ?? ideas
+        let snapshotConnections = (try? store.connections()) ?? connections
+        let snapshotSources = (try? store.listSources()) ?? sources
+        let snapshotOutcomes = (try? store.buildOutcomes()) ?? buildOutcomes
+        let taste = tasteModel
+        let profile = autonomyProfile
+        Task {
+            defer { Task { @MainActor in
+                releaseReservation()
+                self.isRunningJob = false
+            } }
+            do {
+                guard let result = try await PortfolioReasoner.reason(
+                    ideas: snapshotIdeas, connections: snapshotConnections, sources: snapshotSources,
+                    outcomes: snapshotOutcomes, taste: taste, profile: profile,
+                    provider: provider, model: model, apiKey: key, now: Date()
+                ) else {
+                    await MainActor.run {
+                        self.saveLocalPortfolioReport(note: "The model returned nothing usable — used the local synthesis instead.")
+                    }
+                    return
+                }
+                await MainActor.run {
+                    self.recordPortfolioUsage(provider: provider, model: model, response: result.response)
+                    try? self.store.savePortfolioReport(result.report)
+                    self.selectedPage = .patterns
+                    self.reload()
+                    let count = result.report.insights.count
+                    self.errorMessage = "Portfolio synthesis ready via \(provider.providerName) — \(count) cross-idea insight\(count == 1 ? "" : "s")."
+                }
+            } catch {
+                await MainActor.run {
+                    self.saveLocalPortfolioReport(note: "Cloud synthesis didn't land (\(error.localizedDescription)) — used the local one.")
+                }
+            }
+        }
+    }
+
+    private func saveLocalPortfolioReport(note: String) {
+        // Use the full store, not the search-filtered `ideas` view, so the local
+        // synthesis covers the whole portfolio too.
+        let allIdeas = (try? store.listIdeas()) ?? ideas
+        let allConnections = (try? store.connections()) ?? connections
+        let report = PortfolioReasoner.localReport(ideas: allIdeas, connections: allConnections, taste: tasteModel, now: Date())
+        try? store.savePortfolioReport(report)
+        selectedPage = .patterns
+        reload()
+        errorMessage = note
+    }
+
+    private func recordPortfolioUsage(provider: any LLMProvider, model: LLMModel, response: LLMResponse) {
+        let cost = CostEstimator.estimate(model: model, inputTokens: response.inputTokens, outputTokens: response.outputTokens) ?? 0
+        try? store.saveUsage(LLMUsageRecord(
+            provider: provider.providerName, model: model.name, taskClass: .prototypeBrief,
+            inputTokens: response.inputTokens, outputTokens: response.outputTokens, estimatedCostUSD: cost
+        ))
+    }
+
+    /// Resolve the ideas an insight is about, for the clickable chips in the UI.
+    public func ideas(for insight: PortfolioInsight) -> [IdeaSeed] {
+        insight.relatedIdeaTitles.compactMap { title in
+            ideas.first { $0.title.lowercased() == title.lowercased() }
+        }
+    }
+
+    /// Navigate to an idea by title — used by the clickable insight chips.
+    public func focusIdea(titled title: String) {
+        guard let idea = ideas.first(where: { $0.title.lowercased() == title.lowercased() })
+            ?? ideas.first(where: { $0.title.lowercased().contains(title.lowercased()) }) else { return }
+        selectedPage = page(for: idea.status)
+    }
+
+    /// True when the saved synthesis was generated against a different number of ideas
+    /// than the portfolio holds now — a cheap "this is out of date" signal so the card
+    /// can nudge a re-synthesis instead of silently showing a stale report.
+    public var portfolioReportIsStale: Bool {
+        guard let report = portfolioReport else { return false }
+        let current = (try? store.listIdeas().count) ?? ideas.count
+        return report.ideaCount != current
+    }
+
     public func approveAllJobs() {
         do {
             for job in jobs where job.status == .needsApproval {
@@ -786,7 +907,17 @@ public final class ShellViewModel: ObservableObject {
 
     public func createIdea(from source: SourceItem) {
         do {
-            let idea = try store.createIdea(title: source.title, body: source.body.isEmpty ? "Imported from \(source.type.rawValue)." : source.body, tags: [source.type.rawValue])
+            var idea = try store.createIdea(title: source.title, body: source.body.isEmpty ? "Imported from \(source.type.rawValue)." : source.body, tags: [source.type.rawValue])
+            // The new idea's body is a copy of the source body. Link them in BOTH
+            // directions so privacy redaction (which keys on the idea↔source link) still
+            // protects a never-send source's content that now lives in the idea body.
+            idea.sourceIDs = [source.id]
+            try store.upsertIdea(idea)
+            if !source.linkedIdeaIDs.contains(idea.id) {
+                var linkedSource = source
+                linkedSource.linkedIdeaIDs.append(idea.id)
+                try store.upsertSource(linkedSource)
+            }
             selectedPage = .inbox
             reload()
             errorMessage = "Added “\(idea.title)” to the Inbox."
@@ -949,6 +1080,10 @@ public final class ShellViewModel: ObservableObject {
             }
             guard let mission = scoutMissionToRun(scheduledOnly: scheduledOnly, now: now) else {
                 if !scheduledOnly { errorMessage = "Enable an eligible scout mission first." }
+                return false
+            }
+            if !scheduledOnly, let lastRunAt = mission.lastRunAt, now.timeIntervalSince(lastRunAt) < 60 {
+                errorMessage = "Scout just ran. Give public sites a minute before running it again."
                 return false
             }
             let shouldUseWeb = useWeb && autonomyProfile.allowWebScouting
@@ -1656,6 +1791,10 @@ public final class ShellViewModel: ObservableObject {
         if signals.isEmpty {
             signals = (try? await AutonomousScout.webSignals(for: ScoutMission(title: query, query: query), limit: 5)) ?? []
         }
+        if signals.isEmpty {
+            let htmlFallback = BeautifulSoupSearchProvider()
+            signals = (try? await htmlFallback.search(query: query, limit: 3, apiKey: "")) ?? []
+        }
         return Array(unique(signals).prefix(6))
     }
 
@@ -1670,11 +1809,13 @@ public final class ShellViewModel: ObservableObject {
     private func scoutMissionToRun(scheduledOnly: Bool, now: Date) -> ScoutMission? {
         let due = AutonomousScout.dueMissions(profile: autonomyProfile, missions: scoutMissions, now: now, limit: 1).first
         if scheduledOnly { return due }
-        return due ?? AutonomousScout.dueMissions(profile: autonomyProfile, missions: scoutMissions.map { mission in
+        if let due { return due }
+        guard let forced = AutonomousScout.dueMissions(profile: autonomyProfile, missions: scoutMissions.map { mission in
             var copy = mission
             copy.lastRunAt = nil
             return copy
-        }, now: now, limit: 1).first
+        }, now: now, limit: 1).first else { return nil }
+        return scoutMissions.first { $0.id == forced.id } ?? forced
     }
 
     private func defaultScoutMission() -> ScoutMission {

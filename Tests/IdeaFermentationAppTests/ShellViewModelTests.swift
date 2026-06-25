@@ -302,6 +302,52 @@ struct ShellViewModelTests {
         #expect(model.buildPlan(for: idea) != nil)
     }
 
+    @Test func portfolioReasoningFallsBackToLocalWithoutAKey() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        model.addIdea(title: "Private capture tool", body: "Capture ideas locally with zero friction.", tags: "capture")
+        model.addIdea(title: "Freelancer tax dashboard", body: "Track quarterly taxes for freelancers.", tags: "finance")
+
+        model.runPortfolioReasoning()
+
+        // No key → the deterministic local synthesis, persisted and shown on Patterns.
+        let report = try #require(model.portfolioReport)
+        #expect(report.source == "local heuristics")
+        #expect(report.ideaCount == 2)
+        #expect(model.selectedPage == .patterns)
+        #expect(try store.loadPortfolioReport() != nil)
+    }
+
+    @Test func ideaCreatedFromNeverSendSourceIsLinkedAndRedacted() throws {
+        // Regression: an idea minted from a never-send source copies its body, so it
+        // must be linked back to the source or the portfolio digest would leak it.
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        let source = try store.createSource(SourceItem(type: .note, title: "Vault", body: "CREATE-FROM-SOURCE-SECRET", neverSendToCloud: true))
+        model.reload()
+
+        model.createIdea(from: source)
+
+        let idea = try #require(store.listIdeas().first)
+        #expect(idea.sourceIDs == [source.id])
+        let digest = PortfolioReasoner.digest(
+            ideas: try store.listIdeas(), connections: [],
+            sources: try store.listSources(), outcomes: [], taste: TasteModel()
+        )
+        #expect(!digest.contains("CREATE-FROM-SOURCE-SECRET"))
+    }
+
+    @Test func portfolioReasoningGuidesWhenThereAreNoIdeas() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+
+        model.runPortfolioReasoning()
+
+        #expect(model.portfolioReport == nil)
+        #expect(model.selectedPage == .inbox)
+        #expect(model.errorMessage?.contains("No ideas to reason over") == true)
+    }
+
     @Test func queueControlsPauseResumeAndRetrySafely() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let localJob = try store.enqueue(FermentationJob(taskClass: .summarize, status: .pending, inputHash: "local"))
@@ -440,6 +486,23 @@ struct ShellViewModelTests {
         #expect(model.ideas.count == 1)
         #expect(model.ideas[0].sourceIDs == [model.sources[0].id])
         #expect(model.jobs.isEmpty == false)
+    }
+
+    @Test func manualScoutDoesNotHammerSitesOnRapidRerun() async throws {
+        let now = Date()
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        model.autonomyProfile = AutonomyProfile(isEnabled: true, watchTopics: "mac agents", allowWebScouting: false)
+        model.scoutMissions = [
+            ScoutMission(title: "Recent", query: "local AI tools", cadenceHours: 24, lastRunAt: now.addingTimeInterval(-20))
+        ]
+        try model.saveAutonomyConfiguration()
+
+        let ran = await model.runAutonomousScout(useWeb: false, now: now)
+
+        #expect(!ran)
+        #expect(model.sources.isEmpty)
+        #expect(model.errorMessage?.contains("just ran") == true)
     }
 
     @Test func scheduledScoutOnlyRunsDueEligibleMissions() async throws {

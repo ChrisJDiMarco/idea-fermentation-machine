@@ -51,4 +51,24 @@ struct WebSearchProviderTests {
         #expect(signals[0].summary.contains("Ambient widgets"))
         #expect(signals[0].kind == .article)
     }
+
+    @Test func beautifulSoupFallbackParsesHtmlWithoutNetwork() {
+        let html = """
+        <div class="result">
+          <a class="result__a" href="/l/?uddg=https%3A%2F%2Fexample.com%2Fagent%3Fx%3D1&amp;rut=abc">Ambient <b>agents</b> &amp; app ideas</a>
+          <a class="result__snippet">A concrete search signal about passive capture tools.</a>
+        </div>
+        <div class="result">
+          <a class="result__a" href="https://example.com/second">Second signal</a>
+          <a class="result__snippet">Another useful signal.</a>
+        </div>
+        """
+
+        let signals = BeautifulSoupSearchProvider.parseSignals(html: html, limit: 1)
+
+        #expect(signals.count == 1)
+        #expect(signals[0].title == "Ambient agents & app ideas")
+        #expect(signals[0].url == "https://example.com/agent?x=1")
+        #expect(signals[0].summary == "A concrete search signal about passive capture tools.")
+    }
 }
