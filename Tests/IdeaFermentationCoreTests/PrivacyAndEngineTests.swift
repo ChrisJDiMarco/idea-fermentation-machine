@@ -170,9 +170,11 @@ struct PrivacyAndEngineTests {
         _ = try await engine.runNext(provider: EchoInputProvider(), apiKey: "test")
 
         let sent = try #require(store.runLogs().first?.output)
-        #expect(sent.contains("Archive lesson: Archived idea"))
+        // The whole archive lesson is withheld for a never-send-derived idea — title
+        // and tags included, not just the body.
+        #expect(!sent.contains("Archived idea"))
         #expect(!sent.contains("SECRET-ARCHIVED-BODY"))
-        #expect(sent.contains("[private]"))
+        #expect(sent.contains("[private idea]"))
     }
 
     @Test func digestRedactsRunLogOutputTracingToNeverSendSource() {

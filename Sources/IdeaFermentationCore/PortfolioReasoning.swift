@@ -122,6 +122,7 @@ public enum PortfolioReasoner {
         outcomes: [BuildOutcome],
         taste: TasteModel,
         profile: AutonomyProfile,
+        tasteProfile: TasteProfile? = nil,
         provider: any LLMProvider,
         model: LLMModel,
         apiKey: String,
@@ -129,7 +130,7 @@ public enum PortfolioReasoner {
     ) async throws -> (report: PortfolioReport, response: LLMResponse)? {
         let request = LLMRequest(
             taskClass: .prototypeBrief,
-            prompt: prompt(profile: profile),
+            prompt: prompt(profile: profile, tasteProfile: tasteProfile),
             input: digest(ideas: ideas, connections: connections, sources: sources, outcomes: outcomes, taste: taste),
             maxOutputTokens: 1_300
         )
@@ -140,8 +141,9 @@ public enum PortfolioReasoner {
         return (report, response)
     }
 
-    static func prompt(profile: AutonomyProfile) -> String {
-        """
+    static func prompt(profile: AutonomyProfile, tasteProfile: TasteProfile? = nil) -> String {
+        let learnedTaste = (tasteProfile?.promptContext).map { "\n\nLearned taste (distilled from real decisions):\n\($0)" } ?? ""
+        return """
         You are the chief of staff for a solo builder's idea portfolio. You are handed \
         their ENTIRE set of ideas — each with status, ripeness, tags, existing \
         connections, and what they have actually built. Reason ACROSS the whole \
@@ -161,7 +163,7 @@ public enum PortfolioReasoner {
         named yet.
 
         Builder goals: \(profile.goals.isEmpty ? "(unspecified)" : profile.goals)
-        Builder taste notes: \(profile.tasteNotes.isEmpty ? "(unspecified)" : profile.tasteNotes)
+        Builder taste notes: \(profile.tasteNotes.isEmpty ? "(unspecified)" : profile.tasteNotes)\(learnedTaste)
 
         Rules: cite ideas by their EXACT title. Be specific and opinionated — never \
         generic filler. Skip any category that has nothing real to say. At most two of \
@@ -186,12 +188,18 @@ public enum PortfolioReasoner {
     ) -> String {
         let neverSendIdeaIDs = neverSendDerivedIdeaIDs(ideas: ideas, sources: sources)
         let titles = Dictionary(uniqueKeysWithValues: ideas.map { ($0.id, $0.title) })
+        // A never-send-derived idea's title/tags may themselves be protected content, so
+        // withhold them too — not just the body.
+        func safeTitle(_ id: UUID) -> String { neverSendIdeaIDs.contains(id) ? "[private idea]" : (titles[id] ?? "?") }
 
         var lines: [String] = ["IDEAS (\(ideas.count) total):"]
         for idea in ideas.prefix(60) {
+            if neverSendIdeaIDs.contains(idea.id) {
+                lines.append("- [private idea] [\(idea.status.rawValue), ripeness \(Int(idea.ripeness))]")
+                continue
+            }
             let tags = idea.manualTags.isEmpty ? "" : " — tags: \(idea.manualTags.joined(separator: ", "))"
-            let body = neverSendIdeaIDs.contains(idea.id) ? "" : " — \(snippet(idea.body, 130))"
-            lines.append("- \"\(idea.title)\" [\(idea.status.rawValue), ripeness \(Int(idea.ripeness))]\(tags)\(body)")
+            lines.append("- \"\(idea.title)\" [\(idea.status.rawValue), ripeness \(Int(idea.ripeness))]\(tags) — \(snippet(idea.body, 130))")
         }
 
         let strong = connections
@@ -201,14 +209,14 @@ public enum PortfolioReasoner {
         if !strong.isEmpty {
             lines.append("\nALREADY-FOUND CONNECTIONS:")
             for connection in strong {
-                lines.append("- \(titles[connection.fromID] ?? "?") ↔ \(titles[connection.toID] ?? "?")")
+                lines.append("- \(safeTitle(connection.fromID)) ↔ \(safeTitle(connection.toID))")
             }
         }
 
         if !outcomes.isEmpty {
             lines.append("\nWHAT THE BUILDER HAS ACTUALLY BUILT:")
             for outcome in outcomes.sorted(by: { $0.createdAt > $1.createdAt }).prefix(8) {
-                lines.append("- \(titles[outcome.ideaID] ?? "An idea"): \(outcome.result.title)")
+                lines.append("- \(safeTitle(outcome.ideaID)): \(outcome.result.title)")
             }
         }
 

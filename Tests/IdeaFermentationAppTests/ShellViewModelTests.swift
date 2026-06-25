@@ -337,6 +337,48 @@ struct ShellViewModelTests {
         #expect(!digest.contains("CREATE-FROM-SOURCE-SECRET"))
     }
 
+    @Test func relearnTasteFallsBackToLocalWithoutAKey() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        model.addIdea(title: "Ambient memory recall", body: "A private local recall app for daily context.", tags: "memory")
+        let idea = try #require(model.ideas.first)
+        model.markIdeaReady(idea) // a committed decision teaches taste + marks the idea liked
+
+        model.relearnTaste()
+
+        let profile = try #require(model.tasteProfile)
+        #expect(profile.source == "local heuristics")
+        #expect(!profile.isEmpty)
+        #expect(model.selectedPage == .autonomy)
+        #expect(try store.loadTasteProfile() != nil)
+    }
+
+    @Test func relearnTasteGuidesWhenNothingIsTaught() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+
+        model.relearnTaste()
+
+        #expect(model.tasteProfile == nil)
+        #expect(model.errorMessage?.contains("Teach taste first") == true)
+    }
+
+    @Test func resetClearsTheDistilledTasteProfile() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        model.addIdea(title: "Ambient memory recall", body: "Private local recall.", tags: "memory")
+        let idea = try #require(model.ideas.first)
+        model.markIdeaReady(idea)
+        model.relearnTaste()
+        #expect(model.tasteProfile != nil)
+
+        model.resetLearnedTaste()
+
+        #expect(model.tasteProfile == nil)
+        #expect(try store.loadTasteProfile() == nil)
+        #expect(model.tasteModel.isEmpty)
+    }
+
     @Test func portfolioReasoningGuidesWhenThereAreNoIdeas() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store, keyLookup: { _ in nil })

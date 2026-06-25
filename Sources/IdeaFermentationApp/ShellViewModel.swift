@@ -213,6 +213,7 @@ public final class ShellViewModel: ObservableObject {
     @Published var tasteModel = TasteModel()
     @Published var buildOutcomes: [BuildOutcome] = []
     @Published var portfolioReport: PortfolioReport?
+    @Published var tasteProfile: TasteProfile?
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -287,6 +288,7 @@ public final class ShellViewModel: ObservableObject {
             tasteModel = try store.loadTasteModel()
             buildOutcomes = try store.buildOutcomes()
             portfolioReport = try store.loadPortfolioReport()
+            tasteProfile = try store.loadTasteProfile()
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {
@@ -601,6 +603,9 @@ public final class ShellViewModel: ObservableObject {
         let snapshotOutcomes = (try? store.buildOutcomes()) ?? buildOutcomes
         let taste = tasteModel
         let profile = autonomyProfile
+        // Only feed a CLOUD-distilled profile into the prompt — a local profile is just
+        // the same theme tokens the digest already lists, so it would double-count.
+        let learnedTaste = tasteProfile?.source.hasPrefix("cloud") == true ? tasteProfile : nil
         Task {
             defer { Task { @MainActor in
                 releaseReservation()
@@ -609,7 +614,7 @@ public final class ShellViewModel: ObservableObject {
             do {
                 guard let result = try await PortfolioReasoner.reason(
                     ideas: snapshotIdeas, connections: snapshotConnections, sources: snapshotSources,
-                    outcomes: snapshotOutcomes, taste: taste, profile: profile,
+                    outcomes: snapshotOutcomes, taste: taste, profile: profile, tasteProfile: learnedTaste,
                     provider: provider, model: model, apiKey: key, now: Date()
                 ) else {
                     await MainActor.run {
@@ -674,6 +679,106 @@ public final class ShellViewModel: ObservableObject {
         guard let report = portfolioReport else { return false }
         let current = (try? store.listIdeas().count) ?? ideas.count
         return report.ideaCount != current
+    }
+
+    // MARK: Taste as judgment
+
+    /// The ideas the operator's decisions reveal they're drawn to vs. drop. Committing
+    /// (Ready) or a positive build outcome = liked; a negative outcome or archiving an
+    /// idea that never had a positive outcome = disliked.
+    private func tasteDecisionSets() -> (liked: [IdeaSeed], disliked: [IdeaSeed]) {
+        let allIdeas = (try? store.listIdeas()) ?? ideas
+        let outcomes = (try? store.buildOutcomes()) ?? buildOutcomes
+        let positiveIDs = Set(outcomes.filter { $0.result.isPositive }.map { $0.ideaID })
+        let negativeIDs = Set(outcomes.filter { !$0.result.isPositive }.map { $0.ideaID })
+        let liked = allIdeas.filter { $0.status == .ready || positiveIDs.contains($0.id) }
+        let disliked = allIdeas.filter { negativeIDs.contains($0.id) || ($0.status == .archived && !positiveIDs.contains($0.id)) }
+        return (liked, disliked)
+    }
+
+    /// Distills a conceptual taste portrait + rubric from the operator's decisions.
+    /// Cloud-first on the strongest judgment model with the local theme-based portrait
+    /// as the fallback — same caps / reservation / privacy discipline as the agents.
+    public func relearnTaste() {
+        guard !isRunningJob else {
+            errorMessage = "Another AI run is finishing — try again in a moment."
+            return
+        }
+        let decisions = tasteDecisionSets()
+        guard !decisions.liked.isEmpty || !decisions.disliked.isEmpty || !tasteModel.isEmpty else {
+            selectedPage = .autonomy
+            errorMessage = "Teach taste first — mark an idea Ready, build one, or archive one, then re-learn."
+            return
+        }
+
+        // Estimate the reservation from the actual decision payload rather than a flat
+        // guess, so a large set reserves closer to what it will really cost. (Actual
+        // cost is still recorded from the response tokens.)
+        let estimateInput = max(600, (decisions.liked + decisions.disliked).reduce(400) { $0 + ($1.title.count + $1.body.count) / 4 })
+        let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: estimateInput, outputTokens: 700)
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+        guard let provider = providers.first(where: { $0.providerName == route.provider }),
+              let key = apiKey(for: provider.providerName),
+              let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first
+        else {
+            saveLocalTasteProfile(decisions: decisions, note: "Refreshed your taste profile locally — add a cloud key for a reasoned portrait of why.")
+            return
+        }
+        if let cost = route.estimatedCostUSD, !fitsSpendCaps(cost) {
+            saveLocalTasteProfile(decisions: decisions, note: "Spend cap reached — refreshed your taste profile locally instead.")
+            return
+        }
+
+        let releaseReservation = reserveSpend(route.estimatedCostUSD)
+        isRunningJob = true
+        let sources = (try? store.listSources()) ?? self.sources
+        let outcomes = (try? store.buildOutcomes()) ?? buildOutcomes
+        let notes = autonomyProfile.tasteNotes
+        Task {
+            defer { Task { @MainActor in
+                releaseReservation()
+                self.isRunningJob = false
+            } }
+            do {
+                guard let result = try await TasteDistiller.distill(
+                    liked: decisions.liked, disliked: decisions.disliked, outcomes: outcomes,
+                    sources: sources, existingNotes: notes,
+                    provider: provider, model: model, apiKey: key, now: Date()
+                ) else {
+                    await MainActor.run {
+                        self.saveLocalTasteProfile(decisions: decisions, note: "The model returned nothing usable — used the local taste portrait instead.")
+                    }
+                    return
+                }
+                await MainActor.run {
+                    self.recordPortfolioUsage(provider: provider, model: model, response: result.response)
+                    try? self.store.saveTasteProfile(result.profile)
+                    self.selectedPage = .autonomy
+                    self.reload()
+                    self.errorMessage = "Taste portrait refreshed via \(provider.providerName) — \(result.profile.criteria.count) criteria learned."
+                }
+            } catch {
+                await MainActor.run {
+                    self.saveLocalTasteProfile(decisions: decisions, note: "Cloud taste pass didn't land (\(error.localizedDescription)) — used the local portrait.")
+                }
+            }
+        }
+    }
+
+    /// True when decisions have changed since the taste profile was distilled — mirrors
+    /// `portfolioReportIsStale` so the card can nudge a refresh.
+    public var tasteProfileIsStale: Bool {
+        guard let profile = tasteProfile else { return false }
+        let decisions = tasteDecisionSets()
+        return profile.decisionCount != decisions.liked.count + decisions.disliked.count
+    }
+
+    private func saveLocalTasteProfile(decisions: (liked: [IdeaSeed], disliked: [IdeaSeed]), note: String) {
+        let profile = TasteDistiller.localProfile(taste: tasteModel, decisionCount: decisions.liked.count + decisions.disliked.count, now: Date())
+        try? store.saveTasteProfile(profile)
+        selectedPage = .autonomy
+        reload()
+        errorMessage = note
     }
 
     public func approveAllJobs() {
@@ -1643,7 +1748,9 @@ public final class ShellViewModel: ObservableObject {
     public func resetLearnedTaste() {
         do {
             try store.saveTasteModel(TasteModel())
+            try store.clearTasteProfile()
             tasteModel = TasteModel()
+            tasteProfile = nil
             reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -1717,7 +1824,8 @@ public final class ShellViewModel: ObservableObject {
         do {
             guard let seed = try await AutonomousScout.synthesize(
                 profile: autonomyProfile, mission: mission, signals: signals,
-                provider: provider, model: model, apiKey: key, focus: focus
+                provider: provider, model: model, apiKey: key, focus: focus,
+                tasteProfile: tasteProfile?.source.hasPrefix("cloud") == true ? tasteProfile : nil
             ) else { return nil }
             try? store.saveUsage(LLMUsageRecord(
                 provider: provider.providerName, model: model.name, taskClass: .prototypeBrief,

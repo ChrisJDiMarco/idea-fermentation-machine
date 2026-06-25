@@ -1034,6 +1034,20 @@ public final class IdeaStore {
         try saveSetting("portfolio_report_v1", report)
     }
 
+    /// The latest distilled taste profile (portrait + rubric). One current snapshot,
+    /// re-derived from decisions on demand.
+    public func loadTasteProfile() throws -> TasteProfile? {
+        try loadSetting("taste_profile_v1", defaultValue: nil as TasteProfile?)
+    }
+
+    public func saveTasteProfile(_ profile: TasteProfile) throws {
+        try saveSetting("taste_profile_v1", profile)
+    }
+
+    public func clearTasteProfile() throws {
+        try saveSetting("taste_profile_v1", nil as TasteProfile?)
+    }
+
     private func loadSetting<T: Codable>(_ key: String, defaultValue: T) throws -> T {
         guard let row = try db.query("SELECT value FROM app_settings WHERE key = ?", [.text(key)]).first else {
             return defaultValue

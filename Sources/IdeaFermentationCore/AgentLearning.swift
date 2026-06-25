@@ -14,11 +14,12 @@ public enum AgentLearning {
         let ideaTitles = Dictionary(uniqueKeysWithValues: ideas.map { ($0.id, $0.title) })
         var notes: [String] = []
 
-        // Defense in depth: an idea whose evidence includes a never-send source may
-        // carry source-derived text in its body, so keep that body out of the cloud
-        // digest. The idea's title still goes (the operator's own words), but the body
-        // is redacted for these ideas. Checked in both link directions.
+        // Defense in depth: an idea derived from a never-send source may carry protected
+        // content in its title and tags (a captured page title; tags mined from its
+        // body), not just its body — so withhold ALL of it from the cloud digest, in
+        // both link directions.
         let neverSendIdeaIDs = neverSendDerivedIdeaIDs(ideas: ideas, sources: sources)
+        func safeTitle(_ id: UUID) -> String { neverSendIdeaIDs.contains(id) ? "[private idea]" : (ideaTitles[id] ?? "Idea") }
 
         notes += jobs
             .filter { $0.status == .failed && ($0.lastError?.isEmpty == false) }
@@ -33,9 +34,9 @@ public enum AgentLearning {
             .sorted { $0.createdAt > $1.createdAt }
             .prefix(3)
             .map { outcome in
-                let title = ideaTitles[outcome.ideaID] ?? "Idea"
-                let lesson = outcome.note.isEmpty ? "" : " — \(trim(outcome.note, to: 120))"
-                return "Build outcome: \(outcome.result.title) — \(title)\(lesson)."
+                let isPrivate = neverSendIdeaIDs.contains(outcome.ideaID)
+                let lesson = (isPrivate || outcome.note.isEmpty) ? "" : " — \(trim(outcome.note, to: 120))"
+                return "Build outcome: \(outcome.result.title) — \(safeTitle(outcome.ideaID))\(lesson)."
             }
 
         notes += ideas
@@ -43,17 +44,21 @@ public enum AgentLearning {
             .sorted { $0.updatedAt > $1.updatedAt }
             .prefix(3)
             .map { idea in
+                guard !neverSendIdeaIDs.contains(idea.id) else { return "Archive lesson: [private idea] (details withheld)." }
                 let tags = idea.manualTags.isEmpty ? "" : " Themes: \(idea.manualTags.joined(separator: ", "))."
-                let body = neverSendIdeaIDs.contains(idea.id) ? "[private]" : trim(idea.body, to: 140)
-                return "Archive lesson: \(idea.title) — \(body).\(tags)"
+                return "Archive lesson: \(idea.title) — \(trim(idea.body, to: 140)).\(tags)"
             }
 
         notes += connections
             .filter { $0.confidence >= 0.35 }
             .sorted { $0.confidence > $1.confidence }
             .prefix(2)
-            .map {
-                "Durable connection: \(ideaTitles[$0.fromID] ?? "Idea") <-> \(ideaTitles[$0.toID] ?? "Idea") - \(trim($0.explanation, to: 120))."
+            .map { connection in
+                // The explanation is built from idea title/body, so withhold it if either
+                // endpoint is never-send-derived.
+                let isPrivate = neverSendIdeaIDs.contains(connection.fromID) || neverSendIdeaIDs.contains(connection.toID)
+                let detail = isPrivate ? "details withheld" : trim(connection.explanation, to: 120)
+                return "Durable connection: \(safeTitle(connection.fromID)) <-> \(safeTitle(connection.toID)) - \(detail)."
             }
 
         let blockedCount = sources.filter(\.neverSendToCloud).count

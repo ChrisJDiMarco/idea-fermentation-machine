@@ -531,43 +531,125 @@ struct LearnedTasteCard: View {
     var body: some View {
         IFMCard {
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Learned Taste").font(.headline)
-                        Text("Tunes itself from what you mark Ready, build, or archive — no editing required.")
-                            .font(.caption)
-                            .foregroundStyle(IFMTheme.muted)
-                    }
-                    Spacer()
-                    Pill(text: "\(model.tasteModel.observations) signal\(model.tasteModel.observations == 1 ? "" : "s")", color: IFMTheme.purple)
-                }
+                header
 
-                if model.tasteModel.isEmpty {
-                    Text("Nothing learned yet. Mark an idea Ready or archive one and local scoring starts adapting to your choices.")
+                if let profile = model.tasteProfile, !profile.isEmpty {
+                    profileView(profile)
+                } else if model.tasteModel.isEmpty {
+                    Text("Nothing learned yet. Mark an idea Ready, build one, or archive one — then learn your taste to get a portrait of what pulls you in.")
                         .font(.caption)
                         .foregroundStyle(IFMTheme.muted)
                         .padding(.vertical, 2)
-                } else {
-                    let themes = model.tasteModel.topThemes(limit: 8)
-                    if !themes.liked.isEmpty {
-                        themeRow(title: "Leaning toward", color: IFMTheme.green, tokens: themes.liked.map(\.token))
-                    }
-                    if !themes.disliked.isEmpty {
-                        themeRow(title: "Leaning away from", color: IFMTheme.red, tokens: themes.disliked.map(\.token))
-                    }
-                    HStack {
-                        Spacer()
-                        Button("Reset Learned Taste", role: .destructive) { confirmingReset = true }
-                            .font(.caption)
-                    }
                 }
+
+                // The raw learned themes stay as a secondary, always-local signal.
+                if !model.tasteModel.isEmpty {
+                    learnedThemes
+                }
+
+                actions
             }
         }
         .confirmationDialog("Reset learned taste?", isPresented: $confirmingReset, titleVisibility: .visible) {
             Button("Reset Learned Taste", role: .destructive) { model.resetLearnedTaste() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Forgets every theme learned from your past decisions. Your written taste profile above is unaffected.")
+            Text("Forgets every theme learned from your past decisions, and clears the distilled portrait. Your written taste profile above is unaffected.")
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Learned Taste").font(.headline)
+                Text("Distilled from what you mark Ready, build, or archive — what genuinely pulls you in, not just topic words.")
+                    .font(.caption)
+                    .foregroundStyle(IFMTheme.muted)
+            }
+            Spacer()
+            Pill(text: "\(model.tasteModel.observations) signal\(model.tasteModel.observations == 1 ? "" : "s")", color: IFMTheme.purple)
+        }
+    }
+
+    private func profileView(_ profile: TasteProfile) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(profile.portrait)
+                .font(.system(size: 14))
+                .foregroundStyle(IFMTheme.text)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(IFMTheme.softPanel)
+                .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+
+            if !profile.likes.isEmpty {
+                criteriaSection(title: "Draws you in", color: IFMTheme.green, criteria: profile.likes)
+            }
+            if !profile.avoids.isEmpty {
+                criteriaSection(title: "Pushes you away", color: IFMTheme.red, criteria: profile.avoids)
+            }
+
+            HStack(spacing: 8) {
+                Pill(text: profile.source, color: profile.source.hasPrefix("cloud") ? IFMTheme.green : IFMTheme.slate)
+                Text("Learned \(profile.generatedAt.formatted(date: .abbreviated, time: .shortened)) · \(profile.decisionCount) decision\(profile.decisionCount == 1 ? "" : "s")")
+                    .font(.caption2)
+                    .foregroundStyle(IFMTheme.muted)
+                if model.tasteProfileIsStale {
+                    Label("New decisions — re-learn", systemImage: "clock.badge.exclamationmark")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(IFMTheme.orange)
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private func criteriaSection(title: String, color: Color, criteria: [TasteCriterion]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption.bold()).foregroundStyle(color)
+            ForEach(criteria) { criterion in
+                HStack(alignment: .top, spacing: 8) {
+                    Circle().fill(color).frame(width: 6, height: 6).padding(.top, 5)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(criterion.name).font(.system(size: 12, weight: .semibold))
+                        if !criterion.note.isEmpty {
+                            Text(criterion.note).font(.caption2).foregroundStyle(IFMTheme.muted)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var learnedThemes: some View {
+        let themes = model.tasteModel.topThemes(limit: 8)
+        return VStack(alignment: .leading, spacing: 6) {
+            if !themes.liked.isEmpty {
+                themeRow(title: "Themes it tracks", color: IFMTheme.slate, tokens: themes.liked.map(\.token))
+            }
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: 8) {
+            Button {
+                model.relearnTaste()
+            } label: {
+                HStack(spacing: 6) {
+                    if model.isRunningJob { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "wand.and.stars") }
+                    Text(model.isRunningJob ? "Thinking…" : (model.tasteProfile == nil ? "Learn My Taste" : "Re-learn Taste"))
+                }
+                .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(model.isRunningJob)
+            Spacer()
+            if !model.tasteModel.isEmpty || model.tasteProfile != nil {
+                Button("Reset", role: .destructive) { confirmingReset = true }
+                    .font(.caption)
+            }
         }
     }
 

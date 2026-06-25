@@ -91,8 +91,9 @@ struct PortfolioReasoningTests {
         try store.upsertSource(secret)
 
         let digest = PortfolioReasoner.digest(ideas: try store.listIdeas(), connections: [], sources: try store.listSources(), outcomes: [], taste: TasteModel())
-        #expect(digest.contains("Derived idea"))
+        #expect(!digest.contains("Derived idea"))         // title withheld too
         #expect(!digest.contains("REVERSE-LINK-SECRET"))
+        #expect(digest.contains("[private idea"))
     }
 
     @Test func digestRedactsNeverSendSourcedIdeaBodies() throws {
@@ -105,7 +106,8 @@ struct PortfolioReasoningTests {
 
         let digest = PortfolioReasoner.digest(ideas: ideas, connections: [], sources: [secret], outcomes: [], taste: TasteModel())
 
-        #expect(digest.contains("Sensitive idea"))         // title (the builder's own words) still goes
+        #expect(!digest.contains("Sensitive idea"))         // title may be source-derived → withheld
         #expect(!digest.contains("PORTFOLIO-SECRET-BODY"))  // never-send-sourced body is withheld
+        #expect(digest.contains("[private idea"))
     }
 }

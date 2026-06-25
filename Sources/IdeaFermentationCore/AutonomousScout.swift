@@ -71,11 +71,12 @@ public enum AutonomousScout {
         provider: any LLMProvider,
         model: LLMModel,
         apiKey: String,
-        focus: ScoutFocus? = nil
+        focus: ScoutFocus? = nil,
+        tasteProfile: TasteProfile? = nil
     ) async throws -> ExtractedSeed? {
         let request = LLMRequest(
             taskClass: .prototypeBrief,
-            prompt: synthesisPrompt(profile: profile),
+            prompt: synthesisPrompt(profile: profile, tasteProfile: tasteProfile),
             input: synthesisInput(mission: mission, signals: signals, focus: focus),
             maxOutputTokens: 700
         )
@@ -83,8 +84,9 @@ public enum AutonomousScout {
         return decodeSeed(from: response.text)
     }
 
-    static func synthesisPrompt(profile: AutonomyProfile) -> String {
-        """
+    static func synthesisPrompt(profile: AutonomyProfile, tasteProfile: TasteProfile? = nil) -> String {
+        let learnedTaste = (tasteProfile?.promptContext).map { "\n\nLearned taste (from real decisions):\n\($0)" } ?? ""
+        return """
         You are an original product strategist for a solo builder. Given fresh external \
         signals and the builder's taste, propose ONE original, non-obvious product or app \
         idea that connects or extends the signals — NOT a summary of them. It must fit the \
@@ -92,7 +94,7 @@ public enum AutonomousScout {
 
         Builder taste: \(profile.tasteNotes.isEmpty ? "(unspecified)" : profile.tasteNotes)
         Goals: \(profile.goals.isEmpty ? "(unspecified)" : profile.goals)
-        Avoid: \(profile.excludedTopics.isEmpty ? "(nothing specific)" : profile.excludedTopics)
+        Avoid: \(profile.excludedTopics.isEmpty ? "(nothing specific)" : profile.excludedTopics)\(learnedTaste)
 
         Return ONLY JSON matching ExtractedSeed: \
         {"title": "<=70 chars", "body": "the idea, why it is non-obvious given the signals, \
