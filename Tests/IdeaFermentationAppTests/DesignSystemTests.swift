@@ -62,6 +62,7 @@ struct ToastToneTests {
         #expect(ToastTone.classify("Critique queued for Ripening workflow.") == .success)
         #expect(ToastTone.classify("Imported whiteboard.webp, but local text extraction did not find readable text.") == .success)
         #expect(ToastTone.classify("New connector token generated. Re-paste it into the Chrome extension.") == .success)
+        #expect(ToastTone.classify("Recorded outcome for Ambient memory: Shipped.") == .success)
 
         // Warnings (soft notices, not failures)
         #expect(ToastTone.classify("Already captured: Meeting memory.") == .warning)

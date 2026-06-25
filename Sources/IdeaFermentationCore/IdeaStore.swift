@@ -163,6 +163,15 @@ public final class IdeaStore {
         )
         """)
         try db.execute("""
+        CREATE TABLE IF NOT EXISTS build_outcomes (
+            id TEXT PRIMARY KEY,
+            idea_id TEXT NOT NULL,
+            result TEXT NOT NULL,
+            note TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """)
+        try db.execute("""
         CREATE TABLE IF NOT EXISTS llm_usage_records (
             id TEXT PRIMARY KEY,
             provider TEXT NOT NULL,
@@ -218,6 +227,7 @@ public final class IdeaStore {
             "CREATE INDEX IF NOT EXISTS idx_ripeness_idea ON ripeness_scores(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_critiques_idea ON idea_critiques(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_briefs_idea ON prototype_briefs(idea_id)",
+            "CREATE INDEX IF NOT EXISTS idx_outcomes_idea ON build_outcomes(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_logs_job ON agent_run_logs(job_id)",
             "CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage_records(created_at)"
         ]
@@ -384,6 +394,7 @@ public final class IdeaStore {
             try db.execute("DELETE FROM ripeness_scores WHERE idea_id = ?", [.text(key)])
             try db.execute("DELETE FROM idea_critiques WHERE idea_id = ?", [.text(key)])
             try db.execute("DELETE FROM prototype_briefs WHERE idea_id = ?", [.text(key)])
+            try db.execute("DELETE FROM build_outcomes WHERE idea_id = ?", [.text(key)])
         }
     }
 
@@ -771,6 +782,37 @@ public final class IdeaStore {
         }
     }
 
+    /// Records what happened when the operator took an idea to build. Keeps one
+    /// outcome per idea (the latest), like critiques.
+    public func saveBuildOutcome(_ outcome: BuildOutcome) throws {
+        try db.transaction {
+            try db.execute("DELETE FROM build_outcomes WHERE idea_id = ?", [.text(outcome.ideaID.uuidString)])
+            try db.execute("INSERT INTO build_outcomes VALUES (?, ?, ?, ?, ?)", [
+                .text(outcome.id.uuidString),
+                .text(outcome.ideaID.uuidString),
+                .text(outcome.result.rawValue),
+                .text(outcome.note),
+                .double(outcome.createdAt.timeIntervalSince1970)
+            ])
+        }
+    }
+
+    public func buildOutcome(for ideaID: UUID) throws -> BuildOutcome? {
+        try buildOutcomes().first { $0.ideaID == ideaID }
+    }
+
+    public func buildOutcomes() throws -> [BuildOutcome] {
+        try db.query("SELECT * FROM build_outcomes ORDER BY created_at DESC").map { row in
+            BuildOutcome(
+                id: UUID(uuidString: row.required("id"))!,
+                ideaID: UUID(uuidString: row.required("idea_id"))!,
+                result: BuildResult(rawValue: row.required("result")) ?? .built,
+                note: row.required("note"),
+                createdAt: Date(timeIntervalSince1970: row.double("created_at"))
+            )
+        }
+    }
+
     public func saveRun(_ run: FermentationRun) throws {
         try db.execute("""
         INSERT OR REPLACE INTO fermentation_runs VALUES (?, ?, ?, ?, ?, ?)
@@ -890,6 +932,7 @@ public final class IdeaStore {
             for table in [
                 "llm_cache",
                 "llm_usage_records",
+                "build_outcomes",
                 "prototype_briefs",
                 "idea_critiques",
                 "ripeness_scores",

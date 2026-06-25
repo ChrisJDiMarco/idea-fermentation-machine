@@ -54,6 +54,8 @@ public struct IdeaFermentationRootView: View {
                 SourceCaptureSheet(model: model)
             case .keys:
                 ProviderKeysSheet(model: model)
+            case .outcome:
+                BuildOutcomeSheet(model: model)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .ifmFocusSearch)) { _ in
@@ -588,6 +590,7 @@ struct IdeaActionsMenu: View {
             Button("Move to Fermenting") { model.moveIdeaToFermenting(idea) }
             Button("Mark Ready") { model.markIdeaReady(idea) }
             Button("Create Build Plan") { model.createBuildPlan(for: idea) }
+            Button("Record Build Outcome…") { model.startBuildOutcome(for: idea) }
             Button("Archive") { model.archiveIdea(idea) }
             Button("Duplicate") { model.duplicateIdea(idea) }
             Divider()
@@ -1156,11 +1159,16 @@ struct ReadyIdeaCard: View {
                         infoBlock("Risk", model.critique(for: idea)?.risks.first ?? brief?.risks ?? "Run critique before building.")
                         infoBlock("First Prototype Steps", brief?.nextActions.prefix(3).joined(separator: " -> ") ?? "Create build plan -> define test -> ship smallest version")
                         Spacer()
-                        Button(brief == nil ? "Create Build Plan" : "Open Build Plan") {
-                            brief == nil ? model.createBuildPlan(for: idea) : model.openBuildPlan(for: idea)
-                        }
+                        VStack(spacing: 8) {
+                            Button(brief == nil ? "Create Build Plan" : "Open Build Plan") {
+                                brief == nil ? model.createBuildPlan(for: idea) : model.openBuildPlan(for: idea)
+                            }
                             .buttonStyle(.borderedProminent)
                             .tint(IFMTheme.red)
+                            Button("Record Outcome") { model.startBuildOutcome(for: idea) }
+                                .buttonStyle(.bordered)
+                                .help("Log shipped / built / abandoned — teaches your taste model")
+                        }
                     }
                 }
                 .padding(.vertical, 14)
@@ -1353,6 +1361,15 @@ struct ArchiveTable: View {
     }
 
     private func archiveOutcome(for idea: IdeaSeed) -> (label: String, symbol: String, color: Color) {
+        // A real recorded build outcome always wins over the heuristic guess.
+        if let outcome = model.buildOutcome(for: idea) {
+            switch outcome.result {
+            case .shipped: return ("Shipped", "paperplane.fill", IFMTheme.green)
+            case .built: return ("Built", "checkmark.seal.fill", IFMTheme.green)
+            case .abandoned: return ("Abandoned", "xmark.bin", IFMTheme.gray)
+            case .flopped: return ("Flopped", "bolt.slash", IFMTheme.orange)
+            }
+        }
         if idea.ripeness >= 75 {
             return ("High Signal", "sparkles", IFMTheme.green)
         }
@@ -1376,6 +1393,9 @@ struct ArchiveTable: View {
     }
 
     private func lesson(for idea: IdeaSeed) -> String {
+        if let note = model.buildOutcome(for: idea)?.note, !note.isEmpty {
+            return note
+        }
         if idea.manualTags.isEmpty {
             return "No explicit lesson captured yet."
         }

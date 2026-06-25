@@ -192,7 +192,8 @@ public final class FermentationEngine {
             sources: try store.listSources(),
             logs: try store.runLogs(),
             jobs: try store.listJobs(),
-            connections: try store.connections()
+            connections: try store.connections(),
+            outcomes: try store.buildOutcomes()
         )
     }
 

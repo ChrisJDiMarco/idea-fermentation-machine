@@ -387,6 +387,59 @@ public struct LLMUsageRecord: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
+/// The terminal outcome of taking an idea to build — the strongest taste signal the
+/// app can capture, because building is a far more committed act than tentatively
+/// marking an idea "ready".
+public enum BuildResult: String, Codable, CaseIterable, Sendable {
+    case shipped      // built and released
+    case built        // built and kept / it works
+    case abandoned    // got a plan, never built it
+    case flopped      // built it, but it didn't pan out
+
+    public var title: String {
+        switch self {
+        case .shipped: "Shipped"
+        case .built: "Built & kept"
+        case .abandoned: "Abandoned"
+        case .flopped: "Built but flopped"
+        }
+    }
+
+    /// Whether this is evidence the operator's taste was *right* about the idea.
+    public var isPositive: Bool { self == .shipped || self == .built }
+
+    /// Direction of the taste signal: +1 you should see more like this, −1 less.
+    public var tasteLabel: Double { isPositive ? 1 : -1 }
+
+    /// How hard the signal pushes — stronger than a mark-ready (0.6), because acting
+    /// on an idea says more than flagging it. `flopped` pushes gently: the idea pulled
+    /// you in (worth something) even though the execution didn't land.
+    public var tasteRate: Double {
+        switch self {
+        case .shipped: 1.0
+        case .built: 0.85
+        case .abandoned: 0.85
+        case .flopped: 0.5
+        }
+    }
+}
+
+public struct BuildOutcome: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var ideaID: UUID
+    public var result: BuildResult
+    public var note: String
+    public var createdAt: Date
+
+    public init(id: UUID = UUID(), ideaID: UUID, result: BuildResult, note: String = "", createdAt: Date = Date()) {
+        self.id = id
+        self.ideaID = ideaID
+        self.result = result
+        self.note = note
+        self.createdAt = createdAt
+    }
+}
+
 public struct AppBudget: Codable, Equatable, Sendable {
     public var dailyUSD: Double
     public var monthlyUSD: Double

@@ -62,6 +62,26 @@ struct ShellViewModelTests {
         #expect(try store.loadTasteModel().isEmpty)
     }
 
+    @Test func recordingBuildOutcomeArchivesAndTeachesTheTasteModel() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        model.addIdea(title: "Ambient memory recall", body: "A private local recall app for daily context.", tags: "memory")
+        let idea = try #require(model.ideas.first)
+
+        model.startBuildOutcome(for: idea)
+        #expect(model.activeSheet == .outcome)
+        model.outcomeDraft.result = .shipped
+        model.outcomeDraft.note = "Shipped to TestFlight; people kept using it."
+        model.saveBuildOutcomeDraft()
+
+        #expect(model.activeSheet == nil)
+        #expect(model.count(for: .archive) == 1)                       // composted to archive
+        let archived = try #require(model.archive.items.first)
+        #expect(model.buildOutcome(for: archived)?.result == .shipped) // outcome recorded
+        #expect(model.tasteModel.affinity(for: ["memory"]) > 0)        // taste taught positive
+        #expect(model.errorMessage?.contains("Recorded outcome") == true)
+    }
+
     @Test func schedulerSettingsUpdateViewModel() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store)

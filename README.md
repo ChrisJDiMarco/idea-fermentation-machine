@@ -29,7 +29,9 @@ Implemented user-facing surfaces:
 - Settings and Keychain-backed provider keys
 - Cost Center
 - Privacy Center
-- Archive
+- Archive (a real lessons ledger: record a build outcome — shipped / built /
+  abandoned / flopped + a note — and it teaches your taste model harder than a
+  mark-ready and feeds the cloud-synthesis memory)
 - Browser Connector (Chrome extension → loopback capture; see `ChromeExtension/`)
 
 ## Browser Connector

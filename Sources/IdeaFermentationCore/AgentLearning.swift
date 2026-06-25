@@ -7,6 +7,7 @@ public enum AgentLearning {
         logs: [AgentRunLog],
         jobs: [FermentationJob],
         connections: [IdeaConnection],
+        outcomes: [BuildOutcome] = [],
         limit: Int = 6,
         maxCharacters: Int = 1_200
     ) -> String {
@@ -19,8 +20,20 @@ public enum AgentLearning {
             .prefix(2)
             .map { "Failure pattern: \($0.taskClass.rawValue) failed with \(trim($0.lastError ?? "", to: 120))." }
 
+        // Build outcomes are the strongest lessons: what the operator actually built
+        // and how it went. They lead the digest.
+        let outcomeIdeaIDs = Set(outcomes.map(\.ideaID))
+        notes += outcomes
+            .sorted { $0.createdAt > $1.createdAt }
+            .prefix(3)
+            .map { outcome in
+                let title = ideaTitles[outcome.ideaID] ?? "Idea"
+                let lesson = outcome.note.isEmpty ? "" : " — \(trim(outcome.note, to: 120))"
+                return "Build outcome: \(outcome.result.title) — \(title)\(lesson)."
+            }
+
         notes += ideas
-            .filter { $0.status == .archived }
+            .filter { $0.status == .archived && !outcomeIdeaIDs.contains($0.id) }
             .sorted { $0.updatedAt > $1.updatedAt }
             .prefix(3)
             .map { idea in
@@ -57,9 +70,10 @@ public enum AgentLearning {
         logs: [AgentRunLog],
         jobs: [FermentationJob],
         connections: [IdeaConnection],
+        outcomes: [BuildOutcome] = [],
         limit: Int = 6
     ) -> String {
-        let context = promptContext(ideas: ideas, sources: sources, logs: logs, jobs: jobs, connections: connections, limit: limit)
+        let context = promptContext(ideas: ideas, sources: sources, logs: logs, jobs: jobs, connections: connections, outcomes: outcomes, limit: limit)
         guard !context.isEmpty else { return payload }
         return "\(payload)\n\n\(context)"
     }

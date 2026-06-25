@@ -159,6 +159,43 @@ struct ProviderKeysSheet: View {
     }
 }
 
+struct BuildOutcomeSheet: View {
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Record Build Outcome").font(.system(size: 24, weight: .bold))
+            Text("What happened when you took “\(model.outcomeDraft.ideaTitle)” to build? Acting on an idea is the strongest signal your taste model learns from — much stronger than marking it ready.")
+                .font(.caption)
+                .foregroundStyle(IFMTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Picker("Outcome", selection: $model.outcomeDraft.result) {
+                ForEach(BuildResult.allCases, id: \.self) { result in
+                    Text(result.title).tag(result)
+                }
+            }
+            .pickerStyle(.radioGroup)
+            .accessibilityLabel("Build outcome")
+
+            Text("What you learned (optional)").font(.caption).foregroundStyle(IFMTheme.muted)
+            TextEditor(text: $model.outcomeDraft.note)
+                .frame(minHeight: 110)
+                .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border) }
+                .accessibilityLabel("What you learned")
+
+            HStack {
+                Spacer()
+                Button("Cancel") { model.activeSheet = nil }
+                Button("Record Outcome") { model.saveBuildOutcomeDraft() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+    }
+}
+
 struct SettingsPage: View {
     @ObservedObject var model: ShellViewModel
     @State private var confirmingReset = false

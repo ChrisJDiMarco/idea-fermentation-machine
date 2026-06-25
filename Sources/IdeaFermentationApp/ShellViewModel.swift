@@ -87,13 +87,29 @@ public enum IFMSheet: Identifiable, Sendable {
     case idea
     case source
     case keys
+    case outcome
 
     public var id: String {
         switch self {
         case .idea: "idea"
         case .source: "source"
         case .keys: "keys"
+        case .outcome: "outcome"
         }
+    }
+}
+
+public struct BuildOutcomeDraft: Equatable, Sendable {
+    public var ideaID: UUID?
+    public var ideaTitle: String
+    public var result: BuildResult
+    public var note: String
+
+    public init(ideaID: UUID? = nil, ideaTitle: String = "", result: BuildResult = .built, note: String = "") {
+        self.ideaID = ideaID
+        self.ideaTitle = ideaTitle
+        self.result = result
+        self.note = note
     }
 }
 
@@ -182,6 +198,7 @@ public final class ShellViewModel: ObservableObject {
     @Published var ideaDraft = IdeaDraft()
     @Published var sourceDraft = SourceDraft()
     @Published var keyDraft = ProviderKeyDraft()
+    @Published var outcomeDraft = BuildOutcomeDraft()
     @Published var metrics = AppMetrics(diversity: 0, incubationLoad: 0, averageRipeness: 0, totalSpend: 0, pendingJobs: 0, approvalJobs: 0)
     @Published var isRunningJob = false
     @Published var schedulerSettings = SchedulerSettings()
@@ -194,6 +211,7 @@ public final class ShellViewModel: ObservableObject {
     @Published var briefs: [PrototypeBrief] = []
     @Published var critiques: [IdeaCritique] = []
     @Published var tasteModel = TasteModel()
+    @Published var buildOutcomes: [BuildOutcome] = []
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -253,6 +271,7 @@ public final class ShellViewModel: ObservableObject {
             autonomyProfile = try store.loadAutonomyProfile()
             scoutMissions = try store.loadScoutMissions()
             tasteModel = try store.loadTasteModel()
+            buildOutcomes = try store.buildOutcomes()
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {
@@ -1063,7 +1082,8 @@ public final class ShellViewModel: ObservableObject {
             sources: sources,
             logs: logs,
             jobs: jobs,
-            connections: connections
+            connections: connections,
+            outcomes: buildOutcomes
         )
         return CloudPayloadPreview(
             title: preview.title,
@@ -1260,14 +1280,48 @@ public final class ShellViewModel: ObservableObject {
     /// commit to an idea (mark Ready, build), −1 when they let an unripe idea die.
     /// The next local pass scores similar ideas accordingly — the taste profile
     /// tuning itself instead of being hand-edited.
-    private func reinforceTaste(with idea: IdeaSeed, label: Double) {
+    private func reinforceTaste(with idea: IdeaSeed, label: Double, rate: Double = TasteModel.defaultLearningRate) {
         guard label != 0 else { return }
         do {
             let tokens = Tokenizer.vocabulary("\(idea.title) \(idea.body) \(idea.manualTags.joined(separator: " "))")
             guard !tokens.isEmpty else { return }
-            let updated = try store.loadTasteModel().reinforced(with: tokens, label: label)
+            let updated = try store.loadTasteModel().reinforced(with: tokens, label: label, rate: rate)
             try store.saveTasteModel(updated)
             tasteModel = updated
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    // MARK: Build outcome loop
+
+    public func buildOutcome(for idea: IdeaSeed) -> BuildOutcome? {
+        buildOutcomes.first { $0.ideaID == idea.id }
+    }
+
+    public func startBuildOutcome(for idea: IdeaSeed) {
+        outcomeDraft = BuildOutcomeDraft(ideaID: idea.id, ideaTitle: idea.title, result: buildOutcome(for: idea)?.result ?? .built, note: buildOutcome(for: idea)?.note ?? "")
+        activeSheet = .outcome
+    }
+
+    public func saveBuildOutcomeDraft() {
+        guard let ideaID = outcomeDraft.ideaID, let idea = ideas.first(where: { $0.id == ideaID }) else {
+            activeSheet = nil
+            return
+        }
+        let result = outcomeDraft.result
+        let note = outcomeDraft.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        do {
+            try store.saveBuildOutcome(BuildOutcome(ideaID: ideaID, result: result, note: note))
+            // Building is the strongest taste signal there is — reinforce harder than
+            // a mere mark-ready, in the direction the outcome implies.
+            reinforceTaste(with: idea, label: result.tasteLabel, rate: result.tasteRate)
+            // A recorded outcome is an endpoint: the idea composts into the Archive,
+            // now carrying its real result and lesson instead of a heuristic guess.
+            updateIdea(idea) { $0.status = .archived }
+            activeSheet = nil
+            selectedPage = .archive
+            errorMessage = "Recorded outcome for \(idea.title): \(result.title)."
         } catch {
             errorMessage = error.localizedDescription
         }

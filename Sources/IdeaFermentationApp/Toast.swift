@@ -55,7 +55,7 @@ enum ToastTone: Equatable {
         ]) { return .warning }
         if has([
             "created", "queued", "imported", "generated", "saved",
-            "exported", "duplicated", "ready to build"
+            "exported", "duplicated", "ready to build", "recorded"
         ]) { return .success }
         return .error
     }
