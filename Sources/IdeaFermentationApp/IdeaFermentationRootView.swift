@@ -1,3 +1,4 @@
+import AppKit
 import IdeaFermentationCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -157,13 +158,23 @@ public struct IdeaFermentationRootView: View {
             .accessibilityLabel(model.selectedPage == .sources ? "Add source" : "Add idea")
 
             toolbarIcon("clock.arrow.circlepath", "Refresh") { model.reload() }
-            toolbarIcon("bell", "Notifications") { model.showNotifications() }
+            toolbarIcon(model.metrics.approvalJobs > 0 ? "bell.badge" : "bell", "Pending approvals") { model.showNotifications() }
             toolbarIcon("gearshape", "Settings") { model.selectedPage = .settings }
-            Circle()
-                .fill(IFMTheme.slate)
-                .frame(width: 28, height: 28)
-                .overlay(Text("C").font(.caption.bold()).foregroundStyle(.white))
-                .accessibilityLabel("Chris profile")
+            Menu {
+                Button("Settings") { model.selectedPage = .settings }
+                Button("Privacy Center") { model.selectedPage = .privacyCenter }
+                Button("Cost Center") { model.selectedPage = .costCenter }
+            } label: {
+                Circle()
+                    .fill(IFMTheme.slate)
+                    .frame(width: 28, height: 28)
+                    .overlay(Text("C").font(.caption.bold()).foregroundStyle(IFMTheme.onAccent))
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Workspace menu")
+            .accessibilityLabel("Workspace menu")
         }
         .padding(.leading, 78)
         .padding(.trailing, 14)
@@ -244,9 +255,12 @@ public struct IdeaFermentationRootView: View {
                         .font(.caption)
                         .foregroundStyle(IFMTheme.muted)
                 }
-                Label("Healthy", systemImage: "circle.fill")
-                    .font(.caption)
-                    .foregroundStyle(IFMTheme.green)
+                Label(
+                    model.ideas.isEmpty ? "Idle" : (model.metrics.pendingJobs == 0 ? "Healthy" : "Jobs pending"),
+                    systemImage: "circle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(model.ideas.isEmpty ? IFMTheme.muted : IFMTheme.green)
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Diversity")
@@ -543,6 +557,14 @@ struct IdeaInboxRow: View {
     @ObservedObject var model: ShellViewModel
     var idea: IdeaSeed
 
+    /// Honest ripeness tier (the value the row actually carries), shown instead of an
+    /// always-green "Fresh" that ignored the data.
+    private var ripenessTier: (label: String, color: Color) {
+        if idea.ripeness >= 55 { return ("Ripe", IFMTheme.green) }
+        if idea.ripeness >= 30 { return ("Maturing", IFMTheme.orange) }
+        return ("Fresh", IFMTheme.muted)
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             SymbolBadge(symbol: idea.manualTags.contains("audio") ? "headphones" : "sparkles", color: idea.status == .inbox ? IFMTheme.green : IFMTheme.orange, size: 64)
@@ -551,7 +573,7 @@ struct IdeaInboxRow: View {
                     Text(idea.title)
                         .font(.system(size: 16, weight: .semibold))
                         .lineLimit(1)
-                    Circle().fill(IFMTheme.green).frame(width: 6, height: 6)
+                    Circle().fill(ripenessTier.color).frame(width: 6, height: 6)
                     Spacer()
                     Text(idea.createdAt, style: .relative)
                         .font(.caption)
@@ -567,9 +589,9 @@ struct IdeaInboxRow: View {
                     }
                     Spacer()
                     FreshnessDots(score: idea.ripeness)
-                    Text(idea.ripeness > 30 ? "Very Fresh" : "Fresh")
+                    Text(ripenessTier.label)
                         .font(.caption.weight(.semibold))
-                        .foregroundStyle(IFMTheme.green)
+                        .foregroundStyle(ripenessTier.color)
                     IdeaActionsMenu(model: model, idea: idea)
                 }
             }
@@ -589,7 +611,11 @@ struct IdeaActionsMenu: View {
         Menu {
             Button("Move to Fermenting") { model.moveIdeaToFermenting(idea) }
             Button("Mark Ready") { model.markIdeaReady(idea) }
-            Button("Create Build Plan") { model.createBuildPlan(for: idea) }
+            if model.buildPlan(for: idea) == nil {
+                Button("Create Build Plan") { model.createBuildPlan(for: idea) }
+            } else {
+                Button("Open Build Plan") { model.openBuildPlan(for: idea) }
+            }
             Button("Record Build Outcome…") { model.startBuildOutcome(for: idea) }
             Button("Archive") { model.archiveIdea(idea) }
             Button("Duplicate") { model.duplicateIdea(idea) }
@@ -623,7 +649,7 @@ struct FreshnessDots: View {
         HStack(spacing: 6) {
             ForEach(0..<5, id: \.self) { index in
                 Circle()
-                    .fill(Double(index) < max(1, score / 25) ? IFMTheme.green : IFMTheme.scrim.opacity(0.08))
+                    .fill(Double(index) < score / 25 ? IFMTheme.green : IFMTheme.scrim.opacity(0.08))
                     .frame(width: 8, height: 8)
             }
         }
@@ -865,11 +891,11 @@ struct IncubationTimeline: View {
         IFMCard {
             VStack(alignment: .leading, spacing: 18) {
                 HStack {
-                    Text("Incubation Timeline")
+                    Text("How Incubation Works")
                         .font(.system(size: 18, weight: .semibold))
                     Image(systemName: "info.circle").foregroundStyle(IFMTheme.muted)
                     Spacer()
-                    Button("Calendar View") { model.showScheduler() }
+                    Button("Open Scheduler") { model.showScheduler() }
                 }
                 ScrollView(.horizontal) {
                     HStack {
@@ -1195,7 +1221,7 @@ struct ReadyRail: View {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Readiness Checklist").font(.system(size: 18, weight: .bold))
                     HStack {
-                        RipenessRing(score: model.metrics.averageRipeness, color: IFMTheme.red)
+                        RipenessRing(score: model.metrics.averageRipeness, color: IFMTheme.red, caption: "Avg. Ripeness")
                         VStack(alignment: .leading, spacing: 12) {
                             checklist("Ideas ready", "\(model.ready.items.count)", IFMTheme.green)
                             checklist("Needs approval", "\(model.metrics.approvalJobs)", IFMTheme.orange)
@@ -1232,7 +1258,7 @@ struct ReadyRail: View {
                                 .help(model.ready.items.isEmpty ? "No ideas are ready to build yet" : "Create a build brief for your top ready idea")
                         }
                     }
-                    Button("↗  Open Launch Dashboard") { model.openLaunchDashboard() }
+                    Button("↗  Export Build Plans") { model.openLaunchDashboard() }
                         .frame(maxWidth: .infinity)
                         .disabled(model.briefs.isEmpty)
                         .help(model.briefs.isEmpty ? "No build plans yet — create one from a ready idea first" : "Export your build plans")
@@ -1421,7 +1447,7 @@ struct ArchiveRail: View {
                         Text("Total archived").font(.caption).foregroundStyle(IFMTheme.muted)
                     }
                     Spacer()
-                    Image(systemName: "tombstone")
+                    Image(systemName: "archivebox")
                         .font(.system(size: 48))
                         .foregroundStyle(IFMTheme.gray.opacity(0.45))
                 }
@@ -1622,8 +1648,13 @@ struct SourcePreviewSlot: View {
 
     var body: some View {
         Group {
-            if source.type == .screenshot || source.type == .article {
-                ThumbnailCollage(seed: source.title)
+            if source.type == .screenshot, let path = source.filePath, let nsImage = NSImage(contentsOfFile: path) {
+                // The actual captured image — not a stand-in collage masquerading as a preview.
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipped()
             } else {
                 HStack(spacing: 10) {
                     SymbolBadge(symbol: source.extractionStatus == .failed ? "exclamationmark.triangle" : "checkmark", color: source.extractionStatus == .failed ? IFMTheme.orange : color, size: 30)
@@ -1693,9 +1724,6 @@ struct SourcesRail: View {
                     HStack {
                         Text("Extraction Pipeline").font(.headline)
                         Spacer()
-                        Button("Learn more") { model.openPrivacySettings() }
-                            .font(.caption)
-                            .buttonStyle(.borderless)
                     }
                     ForEach(pipelineRows) { row in
                         HStack(spacing: 12) {
@@ -1825,6 +1853,7 @@ struct SourceTinyLine: View {
 struct RipenessRing: View {
     var score: Double
     var color: Color
+    var caption: String = "Ripeness"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -1843,14 +1872,14 @@ struct RipenessRing: View {
                     .font(.system(size: 22, weight: .bold))
                     .contentTransition(.numericText())
                     .animation(reduceMotion ? nil : IFMMotion.standard, value: score)
-                Text(score > 80 ? "Avg. Score" : "High")
+                Text(caption)
                     .font(.caption2)
                     .foregroundStyle(IFMTheme.muted)
             }
         }
         .frame(width: 86, height: 86)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Score ring")
+        .accessibilityLabel(caption)
         .accessibilityValue("\(Int(score)) out of 100")
     }
 }

@@ -103,6 +103,49 @@ struct ShellViewModelTests {
         #expect(model.tasteModel.affinity(for: ["memory"]) < 0)
     }
 
+    @Test func buildPlanNavigatesToTheIdeasOwnPageNotAlwaysReady() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        model.addIdea(title: "Inbox idea", body: "A buildable inbox idea.", tags: "x")
+        let idea = try #require(model.ideas.first)
+        #expect(idea.status == .inbox)
+
+        model.createBuildPlan(for: idea)
+
+        #expect(model.selectedPage == .inbox)        // not hard-coded to .ready
+        #expect(model.buildPlan(for: idea) != nil)   // plan exists and is openable from the menu
+        #expect(model.errorMessage?.contains("Build plan created") == true)
+    }
+
+    @Test func queueSourceAnalysisConfirmsAndDedupes() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let source = try store.createSource(SourceItem(type: .note, title: "A note", body: "body"))
+        let model = ShellViewModel(store: store)
+        model.reload()
+
+        model.queueSourceAnalysis(source)
+        #expect(model.jobs.count == 1)
+        #expect(model.errorMessage?.contains("Analysis queued") == true)
+
+        model.queueSourceAnalysis(source)            // already queued → no second job
+        #expect(model.jobs.count == 1)
+        #expect(model.errorMessage?.contains("already queued") == true)
+    }
+
+    @Test func localPassRunsAgainstTheStoreEvenWithAnActiveSearch() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store)
+        model.addIdea(title: "Real idea", body: "Build a private local AI workflow to test.", tags: "ai")
+        model.searchText = "zzzznonexistentquery"
+        model.reload()
+
+        model.runLocalFermentation()
+
+        // It checks the store, not the filtered array, so it never falsely claims the inbox is empty.
+        #expect(model.errorMessage?.contains("No ideas to ferment") != true)
+        #expect(model.logs.isEmpty == false)
+    }
+
     @Test func launchStepCreatesNothingWhenNoIdeaIsReady() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store)

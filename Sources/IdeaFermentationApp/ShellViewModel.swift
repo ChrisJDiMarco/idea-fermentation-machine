@@ -386,7 +386,9 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func runLocalFermentation() {
-        guard !ideas.isEmpty else {
+        // Gate on the store, not the (possibly search-filtered) `ideas` array, so an
+        // active search that matches nothing can't claim the whole inbox is empty.
+        guard (try? store.listIdeas())?.isEmpty == false else {
             selectedPage = .inbox
             errorMessage = "No ideas to ferment yet. Capture a seed in the Inbox first, then run a local pass."
             return
@@ -589,20 +591,32 @@ public final class ShellViewModel: ObservableObject {
         }
     }
 
+    /// The page a given idea lives on, so navigation lands where the idea's card
+    /// actually is — not always on Ready.
+    func page(for status: IdeaStatus) -> IFMPage {
+        switch status {
+        case .inbox: .inbox
+        case .fermenting: .fermenting
+        case .ripening: .ripening
+        case .ready: .ready
+        case .archived: .archive
+        }
+    }
+
     public func createBuildPlan(for idea: IdeaSeed) {
         do {
             guard try store.prototypeBriefs(for: idea.id).isEmpty else {
-                selectedPage = .ready
+                selectedPage = page(for: idea.status)
                 reload()
-                errorMessage = "Build plan already exists for \(idea.title)."
+                errorMessage = "Build plan already exists for \(idea.title). Open it from the idea's ··· menu."
                 return
             }
             let brief = buildPlanBrief(for: idea)
             try store.savePrototypeBrief(brief)
             reinforceTaste(with: idea, label: 1)
-            selectedPage = .ready
+            selectedPage = page(for: idea.status)
             reload()
-            errorMessage = "Build plan created for \(idea.title). Open it from the idea's card here on the Ready page."
+            errorMessage = "Build plan created for \(idea.title). Open it from the idea's ··· menu."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -644,9 +658,13 @@ public final class ShellViewModel: ObservableObject {
 
     public func createIdea(from source: SourceItem) {
         do {
-            _ = try store.createIdea(title: source.title, body: source.body.isEmpty ? "Imported from \(source.type.rawValue)." : source.body, tags: [source.type.rawValue])
+            let idea = try store.createIdea(title: source.title, body: source.body.isEmpty ? "Imported from \(source.type.rawValue)." : source.body, tags: [source.type.rawValue])
             selectedPage = .inbox
             reload()
+            errorMessage = "Added “\(idea.title)” to the Inbox."
+        } catch IdeaStoreError.duplicate {
+            selectedPage = .inbox
+            errorMessage = "Already captured as an idea: \(source.title)."
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -654,9 +672,16 @@ public final class ShellViewModel: ObservableObject {
 
     public func queueSourceAnalysis(_ source: SourceItem) {
         do {
+            let activeStatuses: Set<JobStatus> = [.pending, .running, .paused, .needsApproval]
+            if jobs.contains(where: { $0.sourceID == source.id && $0.taskClass == .summarize && activeStatuses.contains($0.status) }) {
+                selectedPage = .costCenter
+                errorMessage = "Analysis already queued for \(source.title)."
+                return
+            }
             try store.enqueue(FermentationJob(sourceID: source.id, taskClass: .summarize, inputHash: source.textHash))
             selectedPage = .costCenter
             reload()
+            errorMessage = "Analysis queued for \(source.title). Track it in the Cost Center."
         } catch {
             errorMessage = error.localizedDescription
         }
