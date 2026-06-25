@@ -83,6 +83,39 @@ struct IdeaStoreTests {
         #expect(try store.runs().count == 1)
     }
 
+    @Test func deletingIdeaCascadesToChildRows() throws {
+        let store = try makeStore()
+        let one = try store.createIdea(title: "Primary idea", body: "Body for primary.", tags: ["alpha"])
+        let two = try store.createIdea(title: "Secondary idea", body: "Body for secondary.", tags: ["beta"])
+        try store.saveConnection(IdeaConnection(fromID: one.id, toID: two.id, explanation: "Linked.", confidence: 0.7))
+        try store.saveRipenessScore(RipenessScore(ideaID: one.id, novelty: 50, clarity: 50, evidence: 50, personalResonance: 50, feasibility: 50, timing: 50))
+        try store.saveCritique(IdeaCritique(ideaID: one.id, assumptions: ["a"], risks: ["r"], contradictions: ["c"]))
+        try store.savePrototypeBrief(PrototypeBrief(ideaID: one.id, audience: "x", mvpScope: "y", risks: "z", nextActions: ["n"], markdown: "# m"))
+
+        try store.deleteIdea(one.id)
+
+        #expect(try store.connections().isEmpty)
+        #expect(try store.ripenessScores(for: one.id).isEmpty)
+        #expect(try store.critique(for: one.id) == nil)
+        #expect(try store.prototypeBriefs(for: one.id).isEmpty)
+        #expect(try store.searchIdeas("Primary").contains { $0.id == one.id } == false)
+        // A sibling idea must be left completely untouched by the cascade.
+        #expect(try store.idea(id: two.id).title == "Secondary idea")
+    }
+
+    @Test func deletingSourceScrubsLinkedIdeaReferences() throws {
+        let store = try makeStore()
+        let source = try store.createSource(SourceItem(type: .note, title: "Linked source", body: "Evidence body."))
+        var idea = try store.createIdea(title: "Idea with source", body: "Has one linked source.")
+        idea.sourceIDs = [source.id]
+        try store.upsertIdea(idea)
+
+        try store.deleteSource(source.id)
+
+        #expect(try store.idea(id: idea.id).sourceIDs.isEmpty)
+        #expect(try store.source(textHash: source.textHash) == nil)
+    }
+
     @Test func autonomyProfileAndScoutMissionsPersist() throws {
         let folder = try tempFolder()
         let url = folder.appendingPathComponent("ideas.sqlite")

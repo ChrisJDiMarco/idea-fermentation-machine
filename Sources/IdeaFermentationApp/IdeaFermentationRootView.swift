@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 
 public struct IdeaFermentationRootView: View {
     @StateObject private var model: ShellViewModel
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var searchFocused: Bool
+    @State private var toastDismiss: Task<Void, Never>?
 
     public init(store: IdeaStore, captureServer: CaptureServer? = nil) {
         _model = StateObject(wrappedValue: ShellViewModel(store: store, captureServer: captureServer))
@@ -19,18 +22,29 @@ public struct IdeaFermentationRootView: View {
                 Divider().opacity(0.45)
                 pageBody
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .id(model.selectedPage)
+                    .transition(.opacity)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(reduceMotion ? nil : IFMMotion.standard, value: model.selectedPage)
         }
         .frame(minWidth: 1040, maxWidth: .infinity, minHeight: 680, maxHeight: .infinity)
         .background(IFMTheme.canvas)
         .foregroundStyle(IFMTheme.text)
         .tint(IFMTheme.green)
-        .preferredColorScheme(.light)
-        .alert("Idea Fermentation Machine", isPresented: Binding(get: { model.errorMessage != nil }, set: { if !$0 { model.errorMessage = nil } })) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(model.errorMessage ?? "")
+        .overlay(alignment: .top) {
+            if let message = model.errorMessage {
+                ToastBanner(message: message, tone: ToastTone.classify(message)) {
+                    dismissToast()
+                }
+                .padding(.top, 64)
+                .padding(.horizontal, 18)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(reduceMotion ? nil : IFMMotion.spring, value: model.errorMessage)
+        .onChange(of: model.errorMessage) { _, message in
+            scheduleToastDismiss(for: message)
         }
         .sheet(item: $model.activeSheet) { sheet in
             switch sheet {
@@ -42,6 +56,38 @@ public struct IdeaFermentationRootView: View {
                 ProviderKeysSheet(model: model)
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .ifmFocusSearch)) { _ in
+            searchFocused = true
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ifmNewIdea)) { _ in
+            model.startIdeaCapture()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ifmNewSource)) { _ in
+            model.startSourceCapture()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ifmRefresh)) { _ in
+            model.reload()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .ifmRunLocalPass)) { _ in
+            model.runLocalFermentation()
+        }
+    }
+
+    /// Auto-dismiss transient successes/notices after a few seconds; leave errors
+    /// up until the operator dismisses them or a newer message replaces them.
+    private func scheduleToastDismiss(for message: String?) {
+        toastDismiss?.cancel()
+        guard let message, ToastTone.classify(message).autoDismiss else { return }
+        toastDismiss = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_500_000_000)
+            guard !Task.isCancelled, model.errorMessage == message else { return }
+            withAnimation(reduceMotion ? nil : IFMMotion.spring) { model.errorMessage = nil }
+        }
+    }
+
+    private func dismissToast() {
+        toastDismiss?.cancel()
+        withAnimation(reduceMotion ? nil : IFMMotion.spring) { model.errorMessage = nil }
     }
 
     private var topBar: some View {
@@ -52,8 +98,8 @@ public struct IdeaFermentationRootView: View {
                     .foregroundStyle(IFMTheme.green)
                     .frame(width: 28, height: 28)
                     .background(IFMTheme.green.opacity(0.10))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.green.opacity(0.16)) }
+                    .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
+                    .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.green.opacity(0.16)) }
                 Text("Idea Fermentation Machine")
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
@@ -67,16 +113,31 @@ public struct IdeaFermentationRootView: View {
                     .foregroundStyle(IFMTheme.muted)
                 TextField("Search ideas, notes, or sources...", text: $model.searchText)
                     .textFieldStyle(.plain)
+                    .focused($searchFocused)
                     .onSubmit { model.reload() }
+                    .onChange(of: model.searchText) { _, newValue in
+                        if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { model.reload() }
+                    }
+                if !model.searchText.isEmpty {
+                    Button {
+                        model.searchText = ""
+                        model.reload()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill").foregroundStyle(IFMTheme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear search")
+                    .accessibilityLabel("Clear search")
+                }
                 Text("⌘K")
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(IFMTheme.muted)
+                    .foregroundStyle(searchFocused ? IFMTheme.green : IFMTheme.muted)
             }
             .padding(.horizontal, 12)
             .frame(minWidth: 220, idealWidth: 390, maxWidth: 470, minHeight: 34, maxHeight: 34)
             .background(IFMTheme.canvas)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border.opacity(0.80)) }
+            .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
+            .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border.opacity(0.80)) }
             .accessibilityLabel("Search ideas notes or sources")
 
             Spacer(minLength: 10)
@@ -113,11 +174,10 @@ public struct IdeaFermentationRootView: View {
             Image(systemName: symbol)
                 .font(.system(size: 15, weight: .medium))
                 .frame(width: 30, height: 30)
-                .background(Color.black.opacity(0.030))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .contentShape(RoundedRectangle(cornerRadius: 8))
+                .ifmHover(restingOpacity: 0.030, hoverOpacity: 0.095)
+                .contentShape(RoundedRectangle(cornerRadius: IFMRadius.md))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(IFMPressableButtonStyle())
         .help(label)
         .accessibilityLabel(label)
     }
@@ -214,53 +274,7 @@ public struct IdeaFermentationRootView: View {
     }
 
     private func navButton(_ page: IFMPage) -> some View {
-        Button {
-            model.selectedPage = page
-        } label: {
-            HStack(spacing: 10) {
-                if model.selectedPage == page {
-                    Capsule()
-                        .fill(page.accent)
-                        .frame(width: 3, height: 28)
-                }
-                Image(systemName: page.symbol)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(page.accent)
-                    .frame(width: 24)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(page.title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(model.selectedPage == page ? page.accent : IFMTheme.text)
-                    Text(page.subtitle)
-                        .font(.system(size: 11))
-                        .foregroundStyle(IFMTheme.muted)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if model.count(for: page) > 0 {
-                    Text("\(model.count(for: page))")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(model.selectedPage == page ? page.accent : IFMTheme.muted)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background((model.selectedPage == page ? page.accent : IFMTheme.slate).opacity(0.08))
-                        .clipShape(Capsule())
-                }
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 50)
-            .background(model.selectedPage == page ? page.accent.opacity(0.105) : Color.clear)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                if model.selectedPage == page {
-                    RoundedRectangle(cornerRadius: 8).stroke(page.accent.opacity(0.20))
-                }
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 12)
-        .accessibilityLabel(page.title)
+        SidebarNavButton(model: model, page: page)
     }
 
     @ViewBuilder
@@ -289,6 +303,78 @@ public struct IdeaFermentationRootView: View {
         case .privacyCenter:
             PrivacyCenterPage(model: model)
         }
+    }
+}
+
+/// One sidebar navigation row. Extracted so it can own its own hover state — macOS
+/// users expect the pointer to light up rows — and animate selection changes.
+struct SidebarNavButton: View {
+    @ObservedObject var model: ShellViewModel
+    var page: IFMPage
+    @State private var hovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isSelected: Bool { model.selectedPage == page }
+
+    var body: some View {
+        Button {
+            withAnimation(reduceMotion ? nil : IFMMotion.quick) { model.selectedPage = page }
+        } label: {
+            HStack(spacing: 10) {
+                if isSelected {
+                    Capsule()
+                        .fill(page.accent)
+                        .frame(width: 3, height: 28)
+                        .transition(.scale.combined(with: .opacity))
+                }
+                Image(systemName: page.symbol)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(page.accent)
+                    .frame(width: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(page.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isSelected ? page.accent : IFMTheme.text)
+                    Text(page.subtitle)
+                        .font(.system(size: 11))
+                        .foregroundStyle(IFMTheme.muted)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if model.count(for: page) > 0 {
+                    Text("\(model.count(for: page))")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isSelected ? page.accent : IFMTheme.muted)
+                        .contentTransition(.numericText())
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background((isSelected ? page.accent : IFMTheme.slate).opacity(0.08))
+                        .clipShape(Capsule())
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 50)
+            .background(rowBackground)
+            .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
+            .overlay {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: IFMRadius.md).stroke(page.accent.opacity(0.20))
+                }
+            }
+            .contentShape(RoundedRectangle(cornerRadius: IFMRadius.md))
+        }
+        .buttonStyle(IFMPressableButtonStyle())
+        .padding(.horizontal, 12)
+        .onHover { hovering = $0 }
+        .animation(reduceMotion ? nil : IFMMotion.quick, value: hovering)
+        .accessibilityLabel(page.title)
+        .accessibilityValue(isSelected ? "Selected" : "")
+        .accessibilityHint(page.subtitle)
+    }
+
+    private var rowBackground: Color {
+        if isSelected { return page.accent.opacity(0.105) }
+        return hovering ? IFMTheme.scrim.opacity(0.05) : Color.clear
     }
 }
 
@@ -374,7 +460,7 @@ struct InboxPage: View {
                     }
                     .frame(maxWidth: .infinity, minHeight: 104)
                     .overlay {
-                        RoundedRectangle(cornerRadius: 8)
+                        RoundedRectangle(cornerRadius: IFMRadius.md)
                             .stroke(IFMTheme.green.opacity(0.45), style: StrokeStyle(lineWidth: 1, dash: [5, 5]))
                     }
                 }
@@ -417,8 +503,8 @@ struct InboxPage: View {
                             IdeaInboxRow(model: model, idea: idea)
                         }
                     }
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border) }
+                    .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
+                    .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border) }
                 }
             }
         } rail: {
@@ -442,11 +528,11 @@ struct InboxPage: View {
             .frame(minHeight: 66)
             .frame(maxWidth: .infinity)
             .background(IFMTheme.panelStrong)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border.opacity(0.75)) }
-            .shadow(color: Color.black.opacity(0.018), radius: 8, y: 3)
+            .ifmContainer(stroke: IFMTheme.border.opacity(0.75))
+            .ifmTileShadow()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(IFMPressableButtonStyle())
+        .ifmHover(hoverOpacity: 0.04)
         .accessibilityLabel(title)
     }
 }
@@ -534,7 +620,7 @@ struct FreshnessDots: View {
         HStack(spacing: 6) {
             ForEach(0..<5, id: \.self) { index in
                 Circle()
-                    .fill(Double(index) < max(1, score / 25) ? IFMTheme.green : Color.black.opacity(0.08))
+                    .fill(Double(index) < max(1, score / 25) ? IFMTheme.green : IFMTheme.scrim.opacity(0.08))
                     .frame(width: 8, height: 8)
             }
         }
@@ -624,8 +710,8 @@ struct FermentingPage: View {
                                 .padding(14)
                                 .frame(width: 230, alignment: .top)
                                 .background(color.opacity(0.045))
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
-                                .overlay { RoundedRectangle(cornerRadius: 8).stroke(color.opacity(0.24)) }
+                                .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
+                                .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(color.opacity(0.24)) }
                             }
                         }
                     }
@@ -671,9 +757,8 @@ struct FermentingCard: View {
         }
         .padding(12)
         .frame(height: 154, alignment: .top)
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border) }
+        .background(IFMTheme.panelStrong)
+        .ifmContainer()
     }
 
     private func question(for idea: IdeaSeed) -> String {
@@ -765,8 +850,8 @@ struct DetailPane: View {
         .frame(maxWidth: .infinity, minHeight: 108, alignment: .topLeading)
         .padding(14)
         .background(color.opacity(0.045))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border.opacity(0.72)) }
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border.opacity(0.72)) }
     }
 }
 
@@ -883,7 +968,7 @@ struct RipeningPage: View {
                     metric("\(Int(model.metrics.averageRipeness))%", "Signal Strength", "Average across all active ideas", IFMTheme.green, values: model.ideas.map(\.ripeness))
                 }
                 if model.ripening.items.isEmpty {
-                    EmptyStateCard(title: "Nothing is ripening yet", message: "Run a local pass after capturing a few real ideas. Items move here when their signal improves.", symbol: "sun.max", actionTitle: "Run Local Pass") {
+                    EmptyStateCard(title: "Nothing is ripening yet", message: "Run a local pass after capturing a few real ideas. Items move here when their signal improves.", symbol: "sun.max", actionTitle: "Run Local Pass", accent: IFMTheme.orange) {
                         model.runLocalFermentation()
                     }
                 } else {
@@ -1022,7 +1107,7 @@ struct ReadyPage: View {
         PageScaffold(title: "Ready To Build", subtitle: "Ideas that have ripened and are ready for prototyping.", symbol: nil, accent: IFMTheme.red) {
             VStack(spacing: 18) {
                 if model.ready.items.isEmpty {
-                    EmptyStateCard(title: "No ideas are ready yet", message: "Ready ideas appear after local scoring or cloud synthesis finds enough signal.", symbol: "sparkles", actionTitle: "Run Local Pass") {
+                    EmptyStateCard(title: "No ideas are ready yet", message: "Ready ideas appear after local scoring or cloud synthesis finds enough signal.", symbol: "sparkles", actionTitle: "Run Local Pass", accent: IFMTheme.red) {
                         model.runLocalFermentation()
                     }
                 } else {
@@ -1047,7 +1132,7 @@ struct ReadyIdeaCard: View {
             HStack(spacing: 18) {
                 ThumbnailCollage(seed: idea.title)
                     .frame(width: 218, height: 154)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
                         Image(systemName: "sparkles").foregroundStyle(IFMTheme.red)
@@ -1183,7 +1268,9 @@ struct ArchivePage: View {
                     }
                 }
                 if model.archive.items.isEmpty {
-                    EmptyStateCard(title: "Archive is empty", message: "When you ship, pause, merge, or kill ideas, they’ll land here as reusable compost.", symbol: "archivebox", actionTitle: nil, action: nil)
+                    EmptyStateCard(title: "Archive is empty", message: "When you ship, pause, merge, or kill ideas, they’ll land here as reusable compost.", symbol: "archivebox", actionTitle: "Browse Ideas") {
+                        model.selectedPage = .inbox
+                    }
                 } else {
                     ScrollView(.horizontal) {
                         ArchiveTable(model: model, ideas: archivedIdeas)
@@ -1261,9 +1348,8 @@ struct ArchiveTable: View {
                 Divider()
             }
         }
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border) }
+        .background(IFMTheme.panelStrong)
+        .ifmContainer()
     }
 
     private func archiveOutcome(for idea: IdeaSeed) -> (label: String, symbol: String, color: Color) {
@@ -1391,11 +1477,11 @@ struct SourcesPage: View {
                 .scrollIndicators(.never)
                 if visibleSources.isEmpty {
                     if model.sourcesPage.items.isEmpty {
-                        EmptyStateCard(title: "No sources yet", message: "Import files, paste URLs, or save notes. Sources stay local and become searchable.", symbol: "doc.text", actionTitle: "Add Source") {
+                        EmptyStateCard(title: "No sources yet", message: "Import files, paste URLs, or save notes. Sources stay local and become searchable.", symbol: "doc.text", actionTitle: "Add Source", accent: IFMTheme.purple) {
                             model.startSourceCapture()
                         }
                     } else {
-                        EmptyStateCard(title: "No sources match these filters", message: "Clear filters or broaden the time range to see the sources already in your local library.", symbol: "line.3.horizontal.decrease.circle", actionTitle: "Clear Filters") {
+                        EmptyStateCard(title: "No sources match these filters", message: "Clear filters or broaden the time range to see the sources already in your local library.", symbol: "line.3.horizontal.decrease.circle", actionTitle: "Clear Filters", accent: IFMTheme.purple) {
                             clearSourceFilters()
                         }
                     }
@@ -1532,8 +1618,8 @@ struct SourcePreviewSlot: View {
                 .background(color.opacity(0.055))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border.opacity(0.75)) }
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border.opacity(0.75)) }
     }
 }
 
@@ -1715,23 +1801,33 @@ struct SourceTinyLine: View {
 struct RipenessRing: View {
     var score: Double
     var color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         ZStack {
             Circle().stroke(color.opacity(0.14), lineWidth: 7)
             Circle()
                 .trim(from: 0, to: min(1, score / 100))
-                .stroke(color, style: StrokeStyle(lineWidth: 7, lineCap: .round))
+                .stroke(
+                    AngularGradient(colors: [color.opacity(0.65), color], center: .center, angle: .degrees(-90)),
+                    style: StrokeStyle(lineWidth: 7, lineCap: .round)
+                )
                 .rotationEffect(.degrees(-90))
+                .animation(reduceMotion ? nil : IFMMotion.gentle, value: score)
             VStack(spacing: 2) {
                 Text("\(Int(score))")
                     .font(.system(size: 22, weight: .bold))
+                    .contentTransition(.numericText())
+                    .animation(reduceMotion ? nil : IFMMotion.standard, value: score)
                 Text(score > 80 ? "Avg. Score" : "High")
                     .font(.caption2)
                     .foregroundStyle(IFMTheme.muted)
             }
         }
         .frame(width: 86, height: 86)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Score ring")
+        .accessibilityValue("\(Int(score)) out of 100")
     }
 }
 
@@ -1740,16 +1836,19 @@ struct ThumbnailCollage: View {
 
     var colors: [Color] {
         let palette: [Color] = [IFMTheme.green, IFMTheme.blue, IFMTheme.orange, IFMTheme.purple, IFMTheme.slate]
-        let offset = abs(seed.hashValue) % palette.count
+        // `String.hashValue` is seeded per process, so the collage reshuffled its
+        // colors every launch. `Tokenizer.stableHash` (FNV-1a) keeps a given seed
+        // mapped to the same palette forever — the same discipline the embeddings use.
+        let offset = Int(Tokenizer.stableHash(seed) % UInt64(palette.count))
         return (0..<4).map { palette[($0 + offset) % palette.count] }
     }
 
     var body: some View {
         HStack(spacing: 6) {
             ForEach(0..<3, id: \.self) { index in
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: IFMRadius.md)
                     .fill(colors[index].opacity(0.12))
-                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(colors[index].opacity(0.28)) }
+                    .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(colors[index].opacity(0.28)) }
                     .overlay {
                         VStack {
                             Image(systemName: ["rectangle.grid.2x2", "map", "list.bullet.rectangle", "chart.xyaxis.line"][index])
@@ -1762,6 +1861,6 @@ struct ThumbnailCollage: View {
             }
         }
         .padding(8)
-        .background(Color.black.opacity(0.035))
+        .background(IFMTheme.scrim.opacity(0.035))
     }
 }

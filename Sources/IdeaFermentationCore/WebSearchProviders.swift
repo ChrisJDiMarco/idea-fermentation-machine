@@ -26,7 +26,7 @@ public struct FirecrawlSearchProvider: WebSearchProvider {
             "limit": limit
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await IFMNetworking.session.data(for: request)
         try validateSearchResponse(response, provider: providerName, data: data)
         return try Self.parseSignals(data: data)
     }
@@ -75,7 +75,7 @@ public struct OpenAIWebSearchProvider: WebSearchProvider {
             "max_output_tokens": 900
         ])
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await IFMNetworking.session.data(for: request)
         try validateSearchResponse(response, provider: providerName, data: data)
         return try Self.parseSignals(data: data, fallbackQuery: query)
     }

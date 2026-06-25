@@ -8,12 +8,13 @@ struct EmptyStateCard: View {
     var message: String
     var symbol: String
     var actionTitle: String?
+    var accent: Color = IFMTheme.green
     var action: (() -> Void)?
 
     var body: some View {
         IFMCard(padding: 24) {
             VStack(spacing: 10) {
-                SymbolBadge(symbol: symbol, color: IFMTheme.green, size: 54)
+                SymbolBadge(symbol: symbol, color: accent, size: 54)
                 Text(title)
                     .font(.system(size: 20, weight: .bold))
                     .lineLimit(2)
@@ -25,14 +26,15 @@ struct EmptyStateCard: View {
                 if let actionTitle, let action {
                     Button(actionTitle, action: action)
                         .buttonStyle(.borderedProminent)
+                        .tint(accent)
                         .padding(.top, 6)
                 }
             }
             .frame(maxWidth: .infinity, minHeight: 190)
             .padding(.vertical, 4)
             .background(IFMTheme.softPanel.opacity(0.55))
-            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.green.opacity(0.13)) }
+            .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(accent.opacity(0.13)) }
         }
     }
 }
@@ -48,7 +50,7 @@ struct IdeaCaptureSheet: View {
                 .accessibilityLabel("Idea title")
             TextEditor(text: $model.ideaDraft.body)
                 .frame(minHeight: 160)
-                .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border) }
+                .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border) }
                 .accessibilityLabel("Idea body")
             TextField("Tags, comma separated", text: $model.ideaDraft.tags)
                 .textFieldStyle(.roundedBorder)
@@ -85,7 +87,7 @@ struct SourceCaptureSheet: View {
                 .accessibilityLabel("Source URL")
             TextEditor(text: $model.sourceDraft.body)
                 .frame(minHeight: 140)
-                .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border) }
+                .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border) }
                 .accessibilityLabel("Source text")
             Toggle("Never send this source to cloud models", isOn: $model.sourceDraft.neverSendToCloud)
             HStack {
@@ -227,7 +229,7 @@ struct SettingsPage: View {
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .background((hasKey ? IFMTheme.green : IFMTheme.red).opacity(0.055))
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md))
     }
 }
 
@@ -269,6 +271,7 @@ struct BrowserConnectorCard: View {
                     Button(revealToken ? "Hide" : "Reveal") { revealToken.toggle() }
                         .buttonStyle(.borderless)
                         .font(.caption)
+                        .accessibilityLabel(revealToken ? "Hide connector token" : "Reveal connector token")
                 }
                 .font(.caption)
 
@@ -278,6 +281,7 @@ struct BrowserConnectorCard: View {
                     Spacer()
                     Button("Regenerate") { model.regenerateCaptureToken() }
                         .tint(IFMTheme.orange)
+                        .accessibilityLabel("Regenerate connector token")
                 }
                 .font(.caption)
 
@@ -330,6 +334,7 @@ struct AutonomyPage: View {
                             Spacer()
                             Toggle("", isOn: $model.autonomyProfile.isEnabled)
                                 .labelsHidden()
+                                .accessibilityLabel("Autonomous mode")
                                 .onChange(of: model.autonomyProfile.isEnabled) { _, _ in model.persistAutonomyConfiguration() }
                         }
                         Toggle("Allow public web scouting", isOn: $model.autonomyProfile.allowWebScouting)
@@ -344,7 +349,7 @@ struct AutonomyPage: View {
                         Text("Taste Profile").font(.headline)
                         TextEditor(text: $model.autonomyProfile.tasteNotes)
                             .frame(minHeight: 76)
-                            .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border) }
+                            .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border) }
                             .accessibilityLabel("Taste notes")
                         TextField("Goals", text: $model.autonomyProfile.goals)
                             .textFieldStyle(.roundedBorder)
@@ -367,8 +372,13 @@ struct AutonomyPage: View {
                         HStack {
                             Text("Scout Missions").font(.headline)
                             Spacer()
-                            Button(model.isRunningScout ? "Scouting..." : "Run Scout Now") {
+                            Button {
                                 Task { await model.runAutonomousScout() }
+                            } label: {
+                                HStack(spacing: 6) {
+                                    if model.isRunningScout { ProgressView().controlSize(.small) }
+                                    Text(model.isRunningScout ? "Scouting…" : "Run Scout Now")
+                                }
                             }
                             .disabled(model.isRunningScout || !model.autonomyProfile.isEnabled)
                             .buttonStyle(.borderedProminent)
@@ -435,6 +445,7 @@ struct ScoutMissionRow: View {
             }
             .buttonStyle(.borderless)
             .help("Delete mission")
+            .accessibilityLabel("Delete mission")
         }
         .padding(.vertical, 4)
         .confirmationDialog(
@@ -555,8 +566,13 @@ struct CostCenterPage: View {
                                 Button("Queue Cloud Loop") { model.queueFermentationLoop() }
                                 Button("Approve All…") { confirmingApproveAll = true }
                                     .disabled(model.metrics.approvalJobs == 0)
-                                Button(model.isRunningJob ? "Running…" : "Run Next Cloud Job") { model.runNextCloudJob() }
-                                    .disabled(model.isRunningJob)
+                                Button { model.runNextCloudJob() } label: {
+                                    HStack(spacing: 6) {
+                                        if model.isRunningJob { ProgressView().controlSize(.small) }
+                                        Text(model.isRunningJob ? "Running…" : "Run Next Cloud Job")
+                                    }
+                                }
+                                .disabled(model.isRunningJob)
                             }
                         }
                         .scrollIndicators(.never)
@@ -707,9 +723,12 @@ struct JobQueueRow: View {
             Button("Retry") { model.retryJob(job) }
                 .buttonStyle(.bordered)
         case .running:
-            Text("Running")
-                .font(.caption.bold())
-                .foregroundStyle(IFMTheme.blue)
+            HStack(spacing: 5) {
+                ProgressView().controlSize(.small)
+                Text("Running")
+                    .font(.caption.bold())
+                    .foregroundStyle(IFMTheme.blue)
+            }
         case .complete:
             EmptyView()
         }
@@ -762,8 +781,8 @@ struct CloudPayloadPreviewCard: View {
                         .padding(10)
                 }
                 .frame(minHeight: 120, maxHeight: 180)
-                .background(Color.black.opacity(0.035))
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(IFMTheme.scrim.opacity(0.035))
+                .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
                 HStack {
                     Text(preview.payload.maySend ? "Review before approving cloud synthesis." : "Cloud approval is blocked by privacy settings.")
                         .font(.caption)

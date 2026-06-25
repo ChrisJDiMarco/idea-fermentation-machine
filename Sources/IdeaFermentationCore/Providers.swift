@@ -27,7 +27,7 @@ public struct GeminiProvider: LLMProvider {
             ]
         ]
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        let (data, response) = try await IFMNetworking.session.data(for: urlRequest)
         try validate(response: response, provider: providerName, data: data)
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let candidates = object?["candidates"] as? [[String: Any]]
@@ -71,7 +71,7 @@ public struct OpenAICompatibleProvider: LLMProvider {
             "max_tokens": request.maxOutputTokens
         ]
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        let (data, response) = try await IFMNetworking.session.data(for: urlRequest)
         try validate(response: response, provider: providerName, data: data)
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         let choices = object?["choices"] as? [[String: Any]]
@@ -110,7 +110,7 @@ public struct OpenAIResponsesProvider: LLMProvider {
             "max_output_tokens": request.maxOutputTokens
         ]
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        let (data, response) = try await IFMNetworking.session.data(for: urlRequest)
         try validate(response: response, provider: providerName, data: data)
 
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -151,7 +151,7 @@ public struct AnthropicProvider: LLMProvider {
             ]
         ]
         urlRequest.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: urlRequest)
+        let (data, response) = try await IFMNetworking.session.data(for: urlRequest)
         try validate(response: response, provider: providerName, data: data)
 
         let object = try JSONSerialization.jsonObject(with: data) as? [String: Any]

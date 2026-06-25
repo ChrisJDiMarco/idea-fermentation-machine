@@ -190,17 +190,18 @@ private struct PatternModeSwitch: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(selection == mode ? Color.white : IFMTheme.text)
+                .foregroundStyle(selection == mode ? IFMTheme.onAccent : IFMTheme.text)
                 .background {
                     RoundedRectangle(cornerRadius: 7, style: .continuous)
                         .fill(selection == mode ? IFMTheme.green : Color.clear)
                 }
                 .accessibilityLabel(mode.rawValue)
                 .accessibilityValue(selection == mode ? "Selected" : "Not selected")
+                .accessibilityAddTraits(selection == mode ? .isSelected : [])
             }
         }
         .padding(3)
-        .background(Color.black.opacity(0.07))
+        .background(IFMTheme.scrim.opacity(0.07))
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 9, style: .continuous)
@@ -255,9 +256,9 @@ private struct PatternClusterMap: View {
                     }
                     .frame(width: proxy.size.width < 640 ? 132 : 156, alignment: .leading)
                     .padding(8)
-                    .background(Color.white.opacity(0.92))
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border.opacity(0.85)) }
+                    .background(IFMTheme.panelStrong.opacity(0.96))
+                    .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+                    .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border.opacity(0.85)) }
                     .position(position)
                 }
 
@@ -302,8 +303,8 @@ private struct PatternInlineEmptyState: View {
         .frame(maxWidth: .infinity)
         .padding(24)
         .background(IFMTheme.softPanel)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border.opacity(0.8)) }
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border.opacity(0.8)) }
     }
 }
 
@@ -330,9 +331,9 @@ private struct PatternMapLegend: View {
             }
         }
         .padding(10)
-        .background(Color.white.opacity(0.92))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(IFMTheme.border.opacity(0.85)) }
+        .background(IFMTheme.panelStrong.opacity(0.96))
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border.opacity(0.85)) }
     }
 }
 

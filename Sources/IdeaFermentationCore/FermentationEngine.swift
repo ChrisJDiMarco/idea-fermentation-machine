@@ -175,7 +175,9 @@ public final class FermentationEngine {
         let base: String
         if let ideaID = job.ideaID {
             let idea = try store.idea(id: ideaID)
-            let sources = try idea.sourceIDs.map { try store.source(id: $0) }
+            // Tolerate a source that was deleted after it was linked — skip it rather
+            // than failing the whole job. deleteSource also scrubs these references.
+            let sources = idea.sourceIDs.compactMap { try? store.source(id: $0) }
             base = PrivacyPolicy.preview(idea: idea, sources: sources, taskClass: job.taskClass).payload
         } else if let sourceID = job.sourceID {
             let source = try store.source(id: sourceID)

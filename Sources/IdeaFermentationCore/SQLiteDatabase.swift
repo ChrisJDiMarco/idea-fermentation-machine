@@ -11,6 +11,7 @@ public enum SQLiteValue: Equatable, Sendable {
 
 public final class SQLiteDatabase {
     private var handle: OpaquePointer?
+    private var transactionDepth = 0
 
     public init(path: String) throws {
         if sqlite3_open(path, &handle) != SQLITE_OK {
@@ -22,6 +23,31 @@ public final class SQLiteDatabase {
 
     deinit {
         sqlite3_close(handle)
+    }
+
+    /// Runs `body` inside a single transaction so a multi-statement write either
+    /// fully commits or fully rolls back — no half-written rows, no FTS index left
+    /// out of sync with its base table. Re-entrant: a nested call joins the outer
+    /// transaction instead of starting a second `BEGIN` (which SQLite forbids).
+    @discardableResult
+    public func transaction<T>(_ body: () throws -> T) throws -> T {
+        if transactionDepth > 0 {
+            transactionDepth += 1
+            defer { transactionDepth -= 1 }
+            return try body()
+        }
+        try execute("BEGIN IMMEDIATE")
+        transactionDepth = 1
+        do {
+            let result = try body()
+            transactionDepth = 0
+            try execute("COMMIT")
+            return result
+        } catch {
+            transactionDepth = 0
+            try? execute("ROLLBACK")
+            throw error
+        }
     }
 
     public func execute(_ sql: String, _ bindings: [SQLiteValue] = []) throws {

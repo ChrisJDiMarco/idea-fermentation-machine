@@ -190,13 +190,39 @@ public final class IdeaStore {
         )
         """)
         try migrateV2Columns()
+        try createIndices()
         // Schema v3 re-embeds every idea into the deterministic embedding space.
         // Earlier builds hashed embeddings with `String.hashValue`, so vectors
-        // written before this version are noise and must be recomputed once.
+        // written before this version are noise and must be recomputed once. The
+        // re-embed and the version bump commit together, so an interrupted upgrade
+        // re-runs cleanly next launch instead of leaving a half-migrated database.
         if try currentSchemaVersion() < 3 {
-            try reembedAllIdeas()
+            try db.transaction {
+                try reembedAllIdeas()
+                try db.execute("PRAGMA user_version = 3")
+            }
         }
-        try db.execute("PRAGMA user_version = 3")
+    }
+
+    /// Secondary indices for the hot lookups (job scheduling, per-idea children,
+    /// usage aggregation). All `IF NOT EXISTS`, so this is safe to run every launch.
+    private func createIndices() throws {
+        let statements = [
+            "CREATE INDEX IF NOT EXISTS idx_jobs_status ON fermentation_jobs(status)",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_scheduled ON fermentation_jobs(status, scheduled_at)",
+            "CREATE INDEX IF NOT EXISTS idx_ideas_status ON idea_seeds(status)",
+            "CREATE INDEX IF NOT EXISTS idx_sources_type ON source_items(type)",
+            "CREATE INDEX IF NOT EXISTS idx_connections_from ON idea_connections(from_id)",
+            "CREATE INDEX IF NOT EXISTS idx_connections_to ON idea_connections(to_id)",
+            "CREATE INDEX IF NOT EXISTS idx_ripeness_idea ON ripeness_scores(idea_id)",
+            "CREATE INDEX IF NOT EXISTS idx_critiques_idea ON idea_critiques(idea_id)",
+            "CREATE INDEX IF NOT EXISTS idx_briefs_idea ON prototype_briefs(idea_id)",
+            "CREATE INDEX IF NOT EXISTS idx_logs_job ON agent_run_logs(job_id)",
+            "CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage_records(created_at)"
+        ]
+        for statement in statements {
+            try db.execute(statement)
+        }
     }
 
     private func currentSchemaVersion() throws -> Int {
@@ -253,32 +279,36 @@ public final class IdeaStore {
     }
 
     public func upsertIdea(_ idea: IdeaSeed) throws {
-        try db.execute("""
-        INSERT INTO idea_seeds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            title = excluded.title,
-            body = excluded.body,
-            updated_at = excluded.updated_at,
-            status = excluded.status,
-            stage = excluded.stage,
-            source_ids = excluded.source_ids,
-            manual_tags = excluded.manual_tags,
-            text_hash = excluded.text_hash,
-            embedding = excluded.embedding,
-            ripeness = excluded.ripeness,
-            novelty = excluded.novelty,
-            feasibility = excluded.feasibility,
-            evidence = excluded.evidence,
-            personal_resonance = excluded.personal_resonance,
-            timing = excluded.timing
-        """, try ideaBindings(idea))
-        try db.execute("DELETE FROM idea_search WHERE id = ?", [.text(idea.id.uuidString)])
-        try db.execute("INSERT INTO idea_search(id, title, body, tags) VALUES (?, ?, ?, ?)", [
-            .text(idea.id.uuidString),
-            .text(idea.title),
-            .text(idea.body),
-            .text(idea.manualTags.joined(separator: " "))
-        ])
+        // Base row + FTS mirror must commit together; a crash between them used to
+        // leave the search index pointing at stale or missing text.
+        try db.transaction {
+            try db.execute("""
+            INSERT INTO idea_seeds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                body = excluded.body,
+                updated_at = excluded.updated_at,
+                status = excluded.status,
+                stage = excluded.stage,
+                source_ids = excluded.source_ids,
+                manual_tags = excluded.manual_tags,
+                text_hash = excluded.text_hash,
+                embedding = excluded.embedding,
+                ripeness = excluded.ripeness,
+                novelty = excluded.novelty,
+                feasibility = excluded.feasibility,
+                evidence = excluded.evidence,
+                personal_resonance = excluded.personal_resonance,
+                timing = excluded.timing
+            """, try ideaBindings(idea))
+            try db.execute("DELETE FROM idea_search WHERE id = ?", [.text(idea.id.uuidString)])
+            try db.execute("INSERT INTO idea_search(id, title, body, tags) VALUES (?, ?, ?, ?)", [
+                .text(idea.id.uuidString),
+                .text(idea.title),
+                .text(idea.body),
+                .text(idea.manualTags.joined(separator: " "))
+            ])
+        }
     }
 
     public func updateIdeaStatus(_ id: UUID, status: IdeaStatus, stage: FermentationStage? = nil) throws {
@@ -342,8 +372,18 @@ public final class IdeaStore {
     }
 
     public func deleteIdea(_ id: UUID) throws {
-        try db.execute("DELETE FROM idea_search WHERE id = ?", [.text(id.uuidString)])
-        try db.execute("DELETE FROM idea_seeds WHERE id = ?", [.text(id.uuidString)])
+        // Delete the idea and every row that belongs to it, atomically. Without the
+        // cascade, connections, ripeness history, critiques, and briefs were
+        // orphaned and lingered in the Patterns view forever.
+        let key = id.uuidString
+        try db.transaction {
+            try db.execute("DELETE FROM idea_search WHERE id = ?", [.text(key)])
+            try db.execute("DELETE FROM idea_seeds WHERE id = ?", [.text(key)])
+            try db.execute("DELETE FROM idea_connections WHERE from_id = ? OR to_id = ?", [.text(key), .text(key)])
+            try db.execute("DELETE FROM ripeness_scores WHERE idea_id = ?", [.text(key)])
+            try db.execute("DELETE FROM idea_critiques WHERE idea_id = ?", [.text(key)])
+            try db.execute("DELETE FROM prototype_briefs WHERE idea_id = ?", [.text(key)])
+        }
     }
 
     public func semanticIdeas(_ query: String, limit: Int = 8) throws -> [IdeaSeed] {
@@ -373,26 +413,28 @@ public final class IdeaStore {
     }
 
     public func upsertSource(_ source: SourceItem) throws {
-        try db.execute("""
-        INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-            type = excluded.type,
-            title = excluded.title,
-            body = excluded.body,
-            file_path = excluded.file_path,
-            url = excluded.url,
-            extraction_status = excluded.extraction_status,
-            linked_idea_ids = excluded.linked_idea_ids,
-            never_send_to_cloud = excluded.never_send_to_cloud,
-            text_hash = excluded.text_hash,
-            metadata = excluded.metadata
-        """, try sourceBindings(source))
-        try db.execute("DELETE FROM source_search WHERE id = ?", [.text(source.id.uuidString)])
-        try db.execute("INSERT INTO source_search(id, title, body) VALUES (?, ?, ?)", [
-            .text(source.id.uuidString),
-            .text(source.title),
-            .text(source.body)
-        ])
+        try db.transaction {
+            try db.execute("""
+            INSERT INTO source_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                type = excluded.type,
+                title = excluded.title,
+                body = excluded.body,
+                file_path = excluded.file_path,
+                url = excluded.url,
+                extraction_status = excluded.extraction_status,
+                linked_idea_ids = excluded.linked_idea_ids,
+                never_send_to_cloud = excluded.never_send_to_cloud,
+                text_hash = excluded.text_hash,
+                metadata = excluded.metadata
+            """, try sourceBindings(source))
+            try db.execute("DELETE FROM source_search WHERE id = ?", [.text(source.id.uuidString)])
+            try db.execute("INSERT INTO source_search(id, title, body) VALUES (?, ?, ?)", [
+                .text(source.id.uuidString),
+                .text(source.title),
+                .text(source.body)
+            ])
+        }
     }
 
     public func listSources(type: SourceType? = nil) throws -> [SourceItem] {
@@ -413,8 +455,19 @@ public final class IdeaStore {
     }
 
     public func deleteSource(_ id: UUID) throws {
-        try db.execute("DELETE FROM source_search WHERE id = ?", [.text(id.uuidString)])
-        try db.execute("DELETE FROM source_items WHERE id = ?", [.text(id.uuidString)])
+        let key = id.uuidString
+        // Ideas keep a list of linked source IDs. Drop the deleted one so a later
+        // cloud job doesn't fail trying to load a source that no longer exists.
+        let affectedIdeas = try listIdeas().filter { $0.sourceIDs.contains(id) }
+        try db.transaction {
+            try db.execute("DELETE FROM source_search WHERE id = ?", [.text(key)])
+            try db.execute("DELETE FROM source_items WHERE id = ?", [.text(key)])
+            for idea in affectedIdeas {
+                var updated = idea
+                updated.sourceIDs.removeAll { $0 == id }
+                try upsertIdea(updated)
+            }
+        }
     }
 
     public func searchSources(_ query: String) throws -> [SourceItem] {
@@ -650,6 +703,7 @@ public final class IdeaStore {
 
     /// Persists the latest critique for an idea, keeping exactly one row per idea.
     public func saveCritique(_ critique: IdeaCritique) throws {
+        try db.transaction {
         try db.execute("DELETE FROM idea_critiques WHERE idea_id = ?", [.text(critique.ideaID.uuidString)])
         try db.execute("""
         INSERT INTO idea_critiques VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -662,6 +716,7 @@ public final class IdeaStore {
             .text(critique.source),
             .double(critique.createdAt.timeIntervalSince1970)
         ])
+        }
     }
 
     public func critique(for ideaID: UUID) throws -> IdeaCritique? {
@@ -830,24 +885,26 @@ public final class IdeaStore {
     }
 
     public func deleteAllData() throws {
-        for table in [
-            "llm_cache",
-            "llm_usage_records",
-            "prototype_briefs",
-            "idea_critiques",
-            "ripeness_scores",
-            "agent_run_logs",
-            "fermentation_runs",
-            "fermentation_jobs",
-            "idea_connections",
-            "source_search",
-            "source_items",
-            "idea_search",
-            "idea_seeds"
-        ] {
-            try db.execute("DELETE FROM \(table)")
+        try db.transaction {
+            for table in [
+                "llm_cache",
+                "llm_usage_records",
+                "prototype_briefs",
+                "idea_critiques",
+                "ripeness_scores",
+                "agent_run_logs",
+                "fermentation_runs",
+                "fermentation_jobs",
+                "idea_connections",
+                "source_search",
+                "source_items",
+                "idea_search",
+                "idea_seeds"
+            ] {
+                try db.execute("DELETE FROM \(table)")
+            }
+            try db.execute("DELETE FROM app_settings")
         }
-        try db.execute("DELETE FROM app_settings")
     }
 
     public func usageTotalUSD() throws -> Double {

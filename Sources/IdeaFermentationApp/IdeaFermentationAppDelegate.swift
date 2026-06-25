@@ -12,6 +12,11 @@ public final class IdeaFermentationAppDelegate: NSObject, NSApplicationDelegate 
         let store = (try? IdeaStore.live()) ?? fallbackStore()
         self.store = store
 
+        // Install a native main menu. v1 had none, so the standard Edit commands
+        // (⌘Z/⌘X/⌘C/⌘V/⌘A) did not work in the capture sheets. This also hosts the
+        // app's own shortcuts (⌘N new idea, ⌘K find, ⌘R refresh).
+        NSApp.mainMenu = IFMMainMenu.build(target: self)
+
         // The loopback capture server shares the single store instance and runs
         // on the main actor (see CaptureServer). Start it before the window so
         // captures work the instant the app is up.
@@ -21,6 +26,14 @@ public final class IdeaFermentationAppDelegate: NSObject, NSApplicationDelegate 
 
         makeWindow(store: store, captureServer: captureServer)
     }
+
+    // MARK: Menu command relays → SwiftUI (via NotificationCenter)
+
+    @objc func ifmNewIdea(_ sender: Any?) { NotificationCenter.default.post(name: .ifmNewIdea, object: nil) }
+    @objc func ifmNewSource(_ sender: Any?) { NotificationCenter.default.post(name: .ifmNewSource, object: nil) }
+    @objc func ifmFocusSearch(_ sender: Any?) { NotificationCenter.default.post(name: .ifmFocusSearch, object: nil) }
+    @objc func ifmRefresh(_ sender: Any?) { NotificationCenter.default.post(name: .ifmRefresh, object: nil) }
+    @objc func ifmRunLocalPass(_ sender: Any?) { NotificationCenter.default.post(name: .ifmRunLocalPass, object: nil) }
 
     private func makeWindow(store: IdeaStore, captureServer: CaptureServer) {
         if let window {

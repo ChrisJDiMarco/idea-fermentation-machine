@@ -88,7 +88,8 @@ public enum AutonomousScout {
         guard let url = components.url else { return [] }
         var request = URLRequest(url: url)
         request.setValue("IdeaFermentationMachine", forHTTPHeaderField: "User-Agent")
-        let (data, _) = try await URLSession.shared.data(for: request)
+        let (data, httpResponse) = try await IFMNetworking.session.data(for: request)
+        try validateScoutResponse(httpResponse, provider: "GitHub", data: data)
         let response = try JSONDecoder().decode(GitHubSearchResponse.self, from: data)
         return response.items.prefix(limit).map { repo in
             ScoutSignal(
@@ -108,7 +109,8 @@ public enum AutonomousScout {
             URLQueryItem(name: "hitsPerPage", value: "\(limit)")
         ]
         guard let url = components.url else { return [] }
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let (data, httpResponse) = try await IFMNetworking.session.data(from: url)
+        try validateScoutResponse(httpResponse, provider: "Hacker News", data: data)
         let response = try JSONDecoder().decode(HackerNewsSearchResponse.self, from: data)
         return response.hits.prefix(limit).map { hit in
             ScoutSignal(
@@ -118,6 +120,18 @@ public enum AutonomousScout {
                 kind: .article
             )
         }
+    }
+}
+
+/// Turn a non-2xx scout response into a clear error instead of a confusing JSON
+/// decode failure. GitHub's unauthenticated search returns 403 (rate limit) with a
+/// JSON error body that does not match our model — that used to surface as an opaque
+/// "keyNotFound" rather than "rate limited".
+private func validateScoutResponse(_ response: URLResponse, provider: String, data: Data) throws {
+    guard let http = response as? HTTPURLResponse else { return }
+    guard (200..<300).contains(http.statusCode) else {
+        let snippet = String((String(data: data, encoding: .utf8) ?? "").prefix(160))
+        throw LLMProviderError.requestFailed("\(provider) scout request failed (\(http.statusCode)): \(snippet)")
     }
 }
 
