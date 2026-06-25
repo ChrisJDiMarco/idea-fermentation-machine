@@ -577,7 +577,7 @@ struct LearnedTasteCard: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(tokens, id: \.self) { token in
-                        Pill(text: token.capitalized, color: color)
+                        Pill(text: ifmDisplayTerm(token), color: color)
                     }
                 }
             }
@@ -627,7 +627,7 @@ struct ScoutFocusCard: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(terms, id: \.self) { term in
-                        Pill(text: term.capitalized, color: color)
+                        Pill(text: ifmDisplayTerm(term), color: color)
                     }
                 }
             }

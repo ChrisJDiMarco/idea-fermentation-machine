@@ -54,6 +54,18 @@ struct ThemeTokenTests {
     }
 }
 
+@Suite("Display terms")
+struct DisplayTermTests {
+    @Test func acronymsAndCasingReadNaturally() {
+        #expect(ifmDisplayTerm("nft projects") == "NFT Projects")
+        #expect(ifmDisplayTerm("hr performance surveillance") == "HR Performance Surveillance")
+        #expect(ifmDisplayTerm("ambient memory") == "Ambient Memory")
+        #expect(ifmDisplayTerm("ios") == "iOS")
+        #expect(ifmDisplayTerm("github") == "GitHub")
+        #expect(ifmDisplayTerm("crypto") == "Crypto")
+    }
+}
+
 @Suite("Toast tone")
 struct ToastToneTests {
     @Test func classifiesAppAuthoredNotices() {

@@ -173,6 +173,33 @@ extension View {
     }
 }
 
+// MARK: - Display helpers
+
+/// Human-friendly casing for a learned/derived theme term. Terms are stored
+/// lowercased for matching, so this is display-only: it upper-cases known acronyms
+/// (NFT, HR, AI…), fixes a few mixed-case product names (iOS, macOS, GitHub), and
+/// title-cases everything else — so "nft projects" reads "NFT Projects", not
+/// "Nft Projects".
+func ifmDisplayTerm(_ term: String) -> String {
+    let acronyms: Set<String> = [
+        "ai", "api", "ui", "ux", "ml", "llm", "gpt", "nft", "hr", "crm", "saas",
+        "sdk", "css", "html", "sql", "kpi", "roi", "mvp", "b2b", "b2c", "ar", "vr",
+        "ocr", "pdf", "url", "rss", "cli", "gui", "iot", "qr", "ip", "os"
+    ]
+    let mixed: [String: String] = [
+        "ios": "iOS", "macos": "macOS", "tvos": "tvOS", "watchos": "watchOS",
+        "github": "GitHub", "openai": "OpenAI", "tiktok": "TikTok", "youtube": "YouTube",
+        "iphone": "iPhone", "ipad": "iPad", "javascript": "JavaScript"
+    ]
+    return term.split(separator: " ").map { raw -> String in
+        let word = String(raw)
+        let lower = word.lowercased()
+        if let m = mixed[lower] { return m }
+        if acronyms.contains(lower) { return word.uppercased() }
+        return word.prefix(1).uppercased() + word.dropFirst()
+    }.joined(separator: " ")
+}
+
 // MARK: - Core components
 
 struct IFMCard<Content: View>: View {
