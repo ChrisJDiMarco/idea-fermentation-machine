@@ -20,9 +20,12 @@ Implemented user-facing surfaces:
 - Source import and URL/text capture
 - Local fermentation pass
 - Cloud job queue and approvals
-- Patterns
-- Autonomy: scout missions, editable taste profile, and a self-tuning Learned
-  Taste model that adapts local scoring to what you mark Ready, build, or archive
+- Patterns (on-device semantic connections via Apple's NLEmbedding; novelty scored
+  as distance from your existing corpus — "unlike anything you've thought before")
+- Autonomy: scout missions that route new signals onto existing ideas or, with a
+  cloud key, synthesize an original idea from them; an editable taste profile; and a
+  self-tuning Learned Taste model that adapts local scoring to what you mark Ready,
+  build, or archive
 - Settings and Keychain-backed provider keys
 - Cost Center
 - Privacy Center

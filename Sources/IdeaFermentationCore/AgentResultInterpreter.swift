@@ -16,12 +16,9 @@ enum AgentResultInterpreter {
         if let decoded = decode(SourceSummary.self, from: output) { return decoded }
         let query = "\(source.title) \(source.body)"
         let sourceVector = LocalEmbeddings.embed(query)
-        let linked = ideas
-            .map { (idea: $0, score: LocalEmbeddings.cosine($0.embedding, sourceVector)) }
-            .filter { $0.score > 0.12 }
-            .sorted { $0.score > $1.score }
-            .prefix(5)
-            .map(\.idea.id)
+        let linked = LocalEmbeddings
+            .related(ideas, to: sourceVector, embedding: { $0.embedding }, topK: 5)
+            .map(\.item.id)
         let tags = TextHashing.normalized(query)
             .split(separator: " ")
             .map(String.init)
@@ -32,19 +29,14 @@ enum AgentResultInterpreter {
 
     static func connections(for idea: IdeaSeed, candidates: [IdeaSeed], output: String? = nil) -> [ConnectionCandidate] {
         if let decoded = decode([ConnectionCandidate].self, from: output) { return decoded }
-        return candidates
-            .filter { $0.id != idea.id }
-            .map { other in
-                (idea: other, score: LocalEmbeddings.cosine(idea.embedding, other.embedding))
-            }
-            .filter { $0.score > 0.16 }
-            .sorted { $0.score > $1.score }
-            .prefix(4)
+        let others = candidates.filter { $0.id != idea.id }
+        return LocalEmbeddings
+            .related(others, to: idea.embedding, embedding: { $0.embedding }, topK: 4)
             .map {
                 ConnectionCandidate(
                     fromID: idea.id,
-                    toID: $0.idea.id,
-                    explanation: connectionExplanation(idea: idea, other: $0.idea),
+                    toID: $0.item.id,
+                    explanation: connectionExplanation(idea: idea, other: $0.item),
                     confidence: min(1, $0.score)
                 )
             }

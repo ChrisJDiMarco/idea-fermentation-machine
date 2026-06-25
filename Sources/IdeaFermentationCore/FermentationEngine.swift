@@ -71,9 +71,10 @@ public final class FermentationEngine {
 
     @discardableResult
     public func runLocalPass(maxIdeas: Int = 25) throws -> [IdeaSeed] {
-        let ideas = try store.listIdeas().prefix(maxIdeas)
+        let corpus = try store.listIdeas()
+        let ideas = corpus.prefix(maxIdeas)
         return try ideas.map { idea in
-            let updated = localUpdate(idea)
+            let updated = localUpdate(idea, corpus: corpus)
             try store.upsertIdea(updated)
             try persistStructuredLocalResults(for: updated)
             let job = try store.enqueue(FermentationJob(
@@ -226,7 +227,7 @@ public final class FermentationEngine {
             try store.upsertSource(next)
             try store.saveRunLog(AgentRunLog(jobID: job.id, agentName: "Local Source Agent", promptVersion: "local-v2", inputTrace: sourceID.uuidString, output: summary.summary, modelUsed: "Local/heuristic-v2"))
         } else if let ideaID = job.ideaID {
-            let idea = localUpdate(try store.idea(id: ideaID))
+            let idea = localUpdate(try store.idea(id: ideaID), corpus: try store.listIdeas())
             try store.upsertIdea(idea)
             try persistStructuredLocalResults(for: idea)
             try store.saveRunLog(AgentRunLog(jobID: job.id, agentName: "Local Fermentation Agent", promptVersion: "local-v2", inputTrace: ideaID.uuidString, output: "Updated \(idea.title) to ripeness \(Int(idea.ripeness)).", modelUsed: "Local/heuristic-v2"))
@@ -341,7 +342,29 @@ public final class FermentationEngine {
     /// other five axes — at most ±~3.7 ripeness once averaged across the six.
     private static let learnedResonanceWeight = 22.0
 
-    private func localUpdate(_ idea: IdeaSeed) -> IdeaSeed {
+    /// Novelty = how unlike everything you've already captured this idea is, blended
+    /// with the lexical signal. The semantic-distance half is the meaningful upgrade:
+    /// "novel" stops meaning "uses the word ambient" and starts meaning "I've never
+    /// thought anything like this before" — a judgment only possible because the app
+    /// holds an embedding of your whole corpus. Falls back to the lexical signal at
+    /// cold start, when there is nothing to be distant *from*.
+    static func noveltyScore(for idea: IdeaSeed, tokens: Set<String>, interestOverlap: Int, tagBoost: Double, corpus: [IdeaSeed]) -> Double {
+        let lexical = min(100, 22
+            + Double(tokens.intersection(noveltyWords).count) * 12
+            + Double(interestOverlap) * 9
+            + tagBoost)
+
+        let others = corpus.filter { $0.id != idea.id && !$0.embedding.isEmpty }
+        guard !idea.embedding.isEmpty, !others.isEmpty else { return lexical }
+
+        let nearest = others.map { LocalEmbeddings.cosine(idea.embedding, $0.embedding) }.max() ?? 0
+        let distance = min(100, max(0, (1 - nearest) * 100))
+        // Distance leads (0.6) so genuine originality drives the score, with the
+        // lexical cue (0.4) keeping cold-ish corpora from scoring everything as novel.
+        return min(100, 0.6 * distance + 0.4 * lexical)
+    }
+
+    private func localUpdate(_ idea: IdeaSeed, corpus: [IdeaSeed]) -> IdeaSeed {
         var next = idea
         let tokens = Tokenizer.vocabulary("\(idea.title) \(idea.body) \(idea.manualTags.joined(separator: " "))")
         let sourceCount = idea.sourceIDs.count
@@ -355,10 +378,7 @@ public final class FermentationEngine {
         let feasibility = min(100, 35 + lengthBoost + tagBoost + min(20, Double(sourceCount) * 5))
         let evidence = min(100, Double(sourceCount) * 22 + (idea.body.isEmpty ? 0 : 8))
         let clarity = AgentResultInterpreter.localClarity(for: idea)
-        let novelty = min(100, 22
-            + Double(tokens.intersection(Self.noveltyWords).count) * 12
-            + Double(interestOverlap) * 9
-            + tagBoost)
+        let novelty = Self.noveltyScore(for: idea, tokens: tokens, interestOverlap: interestOverlap, tagBoost: tagBoost, corpus: corpus)
         let timing = min(100, 30 + Double(tokens.intersection(Self.prototypeWords).count) * 10 + Double(sourceCount) * 6)
 
         var resonance: Double

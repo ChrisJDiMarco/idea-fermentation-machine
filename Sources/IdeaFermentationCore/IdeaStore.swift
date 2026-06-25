@@ -191,15 +191,16 @@ public final class IdeaStore {
         """)
         try migrateV2Columns()
         try createIndices()
-        // Schema v3 re-embeds every idea into the deterministic embedding space.
-        // Earlier builds hashed embeddings with `String.hashValue`, so vectors
-        // written before this version are noise and must be recomputed once. The
-        // re-embed and the version bump commit together, so an interrupted upgrade
-        // re-runs cleanly next launch instead of leaving a half-migrated database.
-        if try currentSchemaVersion() < 3 {
+        // The embedding vector space has changed twice. v3 fixed the non-deterministic
+        // `String.hashValue` hashing; v4 moves to on-device NLEmbedding semantic
+        // vectors (a different dimensionality), so any vector written by an earlier
+        // build must be recomputed. The re-embed and the version bump commit together,
+        // so an interrupted upgrade re-runs cleanly next launch rather than leaving a
+        // database whose vectors live in two incompatible spaces.
+        if try currentSchemaVersion() < 4 {
             try db.transaction {
                 try reembedAllIdeas()
-                try db.execute("PRAGMA user_version = 3")
+                try db.execute("PRAGMA user_version = 4")
             }
         }
     }

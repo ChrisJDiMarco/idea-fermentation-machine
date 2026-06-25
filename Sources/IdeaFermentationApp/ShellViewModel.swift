@@ -770,32 +770,51 @@ public final class ShellViewModel: ObservableObject {
             let filteredWebSignals = AutonomousScout.filterSignals(webSignals, profile: autonomyProfile)
             let signals = filteredWebSignals.isEmpty ? AutonomousScout.fallbackSignals(profile: autonomyProfile, mission: mission) : filteredWebSignals
             let sourceIDs = try saveScoutSources(signals, mission: mission)
-            let seed = AutonomousScout.draftIdea(profile: autonomyProfile, mission: mission, signals: signals)
-            var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
-            idea.sourceIDs = sourceIDs
-            try store.upsertIdea(idea)
-            let job = try store.enqueue(FermentationJob(
-                ideaID: idea.id,
-                taskClass: .scoreRipeness,
-                estimatedCostUSD: 0,
-                modelRoute: ModelRoute(
-                    provider: "Local",
-                    model: "scout-v1",
+
+            // Route the new material. If it's clearly about an idea you already have,
+            // attach it as fresh evidence instead of spawning a near-duplicate — which
+            // also makes cross-pollination a real event you can feel. Only start a new
+            // idea when nothing existing is a strong semantic match.
+            let signalText = ([mission.query] + signals.map { "\($0.title) \($0.summary)" }).joined(separator: " ")
+            let queryVector = LocalEmbeddings.embed(signalText)
+            let strongest = try store.listIdeas()
+                .map { (idea: $0, score: LocalEmbeddings.cosine(queryVector, $0.embedding)) }
+                .max { $0.score < $1.score }
+
+            if let strongest, strongest.score >= LocalEmbeddings.strongMatchFloor {
+                try attachScoutEvidence(sourceIDs, to: strongest.idea, mission: mission)
+            } else {
+                // A real synthesis call (when web scouting + a cloud key + the spend
+                // cap allow) proposes an ORIGINAL idea from the signals; otherwise the
+                // deterministic template. Either way it's source-backed and local-scored.
+                let synthesized = shouldUseWeb ? await synthesizeScoutIdea(mission: mission, signals: signals) : nil
+                let seed = synthesized ?? AutonomousScout.draftIdea(profile: autonomyProfile, mission: mission, signals: signals)
+                var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
+                idea.sourceIDs = sourceIDs
+                try store.upsertIdea(idea)
+                let job = try store.enqueue(FermentationJob(
+                    ideaID: idea.id,
                     taskClass: .scoreRipeness,
-                    rationale: "Autonomous scout output gets a local ripeness pass before cloud synthesis.",
                     estimatedCostUSD: 0,
-                    needsApproval: false
-                ),
-                inputHash: TextHashing.sha256("scout\n\(idea.title)\n\(idea.body)")
-            ))
-            try store.saveRunLog(AgentRunLog(
-                jobID: job.id,
-                agentName: "Scout Agent",
-                promptVersion: shouldUseWeb ? "web-v1" : "local-v1",
-                inputTrace: mission.id.uuidString,
-                output: "Created \(idea.title) from \(signals.count) scout signal(s).",
-                modelUsed: shouldUseWeb ? "Public web endpoints" : "Local/fallback"
-            ))
+                    modelRoute: ModelRoute(
+                        provider: "Local",
+                        model: "scout-v1",
+                        taskClass: .scoreRipeness,
+                        rationale: "Autonomous scout output gets a local ripeness pass before cloud synthesis.",
+                        estimatedCostUSD: 0,
+                        needsApproval: false
+                    ),
+                    inputHash: TextHashing.sha256("scout\n\(idea.title)\n\(idea.body)")
+                ))
+                try store.saveRunLog(AgentRunLog(
+                    jobID: job.id,
+                    agentName: "Scout Agent",
+                    promptVersion: synthesized != nil ? "synth-v1" : (shouldUseWeb ? "web-v1" : "local-v1"),
+                    inputTrace: mission.id.uuidString,
+                    output: "\(synthesized != nil ? "Synthesized" : "Created") \(idea.title) from \(signals.count) scout signal(s).",
+                    modelUsed: synthesized != nil ? "Cloud synthesis" : (shouldUseWeb ? "Public web endpoints" : "Local/fallback")
+                ))
+            }
             markScoutMissionRan(mission)
             try saveAutonomyConfiguration()
             selectedPage = .inbox
@@ -1269,6 +1288,76 @@ public final class ShellViewModel: ObservableObject {
         let cleaned = raw.unicodeScalars.map { allowed.contains($0) ? Character($0) : "-" }
         let name = String(cleaned).trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "Build-Plan" : String(name.prefix(80))
+    }
+
+    /// Attach scouted sources to an existing idea as fresh evidence, revive it if it
+    /// was parked, cross-link the sources, and queue a local re-score.
+    private func attachScoutEvidence(_ sourceIDs: [UUID], to idea: IdeaSeed, mission: ScoutMission) throws {
+        var target = idea
+        let existing = Set(target.sourceIDs)
+        target.sourceIDs += sourceIDs.filter { !existing.contains($0) }
+        if target.status == .archived {
+            target.status = .fermenting
+            target.stage = .brewing
+        }
+        target.updatedAt = Date()
+        try store.upsertIdea(target)
+
+        for sourceID in sourceIDs {
+            if var source = try? store.source(id: sourceID), !source.linkedIdeaIDs.contains(target.id) {
+                source.linkedIdeaIDs.append(target.id)
+                try store.upsertSource(source)
+            }
+        }
+
+        let job = try store.enqueue(FermentationJob(
+            ideaID: target.id,
+            taskClass: .scoreRipeness,
+            modelRoute: ModelRoute(provider: "Local", model: "scout-v1", taskClass: .scoreRipeness, rationale: "Re-score after attaching new scout evidence.", estimatedCostUSD: 0, needsApproval: false),
+            inputHash: TextHashing.sha256("scout-attach\n\(target.id)\n\(sourceIDs.map(\.uuidString).joined())")
+        ))
+        try store.saveRunLog(AgentRunLog(
+            jobID: job.id,
+            agentName: "Scout Agent",
+            promptVersion: "attach-v1",
+            inputTrace: mission.id.uuidString,
+            output: "Attached \(sourceIDs.count) new source(s) to existing idea \(target.title).",
+            modelUsed: "Local/route"
+        ))
+    }
+
+    /// One quality-routed cloud call that synthesizes an original idea from the
+    /// signals. Returns nil (caller falls back to the template) unless a usable
+    /// provider key exists and the day's spend cap still has room — so an
+    /// autonomous run can never silently blow the budget.
+    private func synthesizeScoutIdea(mission: ScoutMission, signals: [ScoutSignal]) async -> ExtractedSeed? {
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+        let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: 600, outputTokens: 500)
+        guard let provider = providers.first(where: { $0.providerName == route.provider }),
+              let key = apiKey(for: provider.providerName),
+              let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first,
+              canAffordSynthesis(estimatedCost: route.estimatedCostUSD ?? 0)
+        else { return nil }
+        do {
+            guard let seed = try await AutonomousScout.synthesize(
+                profile: autonomyProfile, mission: mission, signals: signals,
+                provider: provider, model: model, apiKey: key
+            ) else { return nil }
+            try? store.saveUsage(LLMUsageRecord(
+                provider: provider.providerName, model: model.name, taskClass: .prototypeBrief,
+                inputTokens: 600, outputTokens: 500, estimatedCostUSD: route.estimatedCostUSD ?? 0
+            ))
+            return seed
+        } catch {
+            return nil
+        }
+    }
+
+    private func canAffordSynthesis(estimatedCost: Double) -> Bool {
+        guard estimatedCost > 0 else { return true }
+        let day = Calendar.current.startOfDay(for: Date())
+        let spent = (try? store.usageTotalUSD(since: day)) ?? 0
+        return spent + estimatedCost <= schedulerSettings.dailySpendCapUSD
     }
 
     private func scoutSignals(for mission: ScoutMission) async -> [ScoutSignal] {

@@ -60,6 +60,67 @@ public enum AutonomousScout {
         return try await Array((repos + stories).prefix(limit))
     }
 
+    /// One genuine LLM synthesis: turn the gathered signals + the operator's taste
+    /// into an ORIGINAL idea (a non-obvious framing that connects the signals), not
+    /// the templated digest `draftIdea` produces. Returns nil on any failure so the
+    /// caller falls back to the deterministic template.
+    public static func synthesize(
+        profile: AutonomyProfile,
+        mission: ScoutMission,
+        signals: [ScoutSignal],
+        provider: any LLMProvider,
+        model: LLMModel,
+        apiKey: String
+    ) async throws -> ExtractedSeed? {
+        let request = LLMRequest(
+            taskClass: .prototypeBrief,
+            prompt: synthesisPrompt(profile: profile),
+            input: synthesisInput(mission: mission, signals: signals),
+            maxOutputTokens: 700
+        )
+        let response = try await provider.send(request, model: model, apiKey: apiKey)
+        return decodeSeed(from: response.text)
+    }
+
+    static func synthesisPrompt(profile: AutonomyProfile) -> String {
+        """
+        You are an original product strategist for a solo builder. Given fresh external \
+        signals and the builder's taste, propose ONE original, non-obvious product or app \
+        idea that connects or extends the signals — NOT a summary of them. It must fit the \
+        taste below and be small enough for one person to prototype.
+
+        Builder taste: \(profile.tasteNotes.isEmpty ? "(unspecified)" : profile.tasteNotes)
+        Goals: \(profile.goals.isEmpty ? "(unspecified)" : profile.goals)
+        Avoid: \(profile.excludedTopics.isEmpty ? "(nothing specific)" : profile.excludedTopics)
+
+        Return ONLY JSON matching ExtractedSeed: \
+        {"title": "<=70 chars", "body": "the idea, why it is non-obvious given the signals, \
+        and the single smallest test that would prove it", "tags": ["3-5 lowercase themes"]}
+        """
+    }
+
+    static func synthesisInput(mission: ScoutMission, signals: [ScoutSignal]) -> String {
+        let lines = signals.prefix(6).map { signal in
+            "- \(signal.title): \(signal.summary)\(signal.url.map { " (\($0))" } ?? "")"
+        }.joined(separator: "\n")
+        return "Mission: \(mission.query)\n\nSignals:\n\(lines)"
+    }
+
+    /// Extract an `ExtractedSeed` from a possibly-chatty model reply (handles ```json
+    /// fences and surrounding prose). nil if no decodable object is present.
+    static func decodeSeed(from output: String) -> ExtractedSeed? {
+        var text = output
+        if let start = text.range(of: "```json")?.upperBound, let end = text[start...].range(of: "```")?.lowerBound {
+            text = String(text[start..<end])
+        }
+        guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end else { return nil }
+        guard let seed = try? JSONSupport.decoder.decode(ExtractedSeed.self, from: Data(text[start...end].utf8)) else { return nil }
+        let title = seed.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let body = seed.body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty || !body.isEmpty else { return nil }
+        return seed
+    }
+
     private static func tags(from profile: AutonomyProfile, mission: ScoutMission) -> [String] {
         let raw = "\(profile.watchTopics), \(mission.query)"
             .split { $0 == "," || $0 == "\n" }
