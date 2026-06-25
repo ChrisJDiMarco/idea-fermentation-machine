@@ -23,9 +23,10 @@ Implemented user-facing surfaces:
 - Patterns (on-device semantic connections via Apple's NLEmbedding; novelty scored
   as distance from your existing corpus — "unlike anything you've thought before")
 - Autonomy: scout missions that route new signals onto existing ideas or, with a
-  cloud key, synthesize an original idea from them; an editable taste profile; and a
-  self-tuning Learned Taste model that adapts local scoring to what you mark Ready,
-  build, or archive
+  cloud key, synthesize an original idea from them; a self-tuning Scout Focus that
+  steers what the scout hunts for toward the themes you actually build and away from
+  ones you abandon; an editable taste profile; and a self-tuning Learned Taste model
+  that adapts local scoring to what you mark Ready, build, or archive
 - Settings and Keychain-backed provider keys
 - Cost Center
 - Privacy Center

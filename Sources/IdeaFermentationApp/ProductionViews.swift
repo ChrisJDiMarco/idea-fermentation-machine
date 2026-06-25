@@ -406,6 +406,8 @@ struct AutonomyPage: View {
 
                 LearnedTasteCard(model: model)
 
+                ScoutFocusCard(model: model)
+
                 IFMCard {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
@@ -572,6 +574,56 @@ struct LearnedTasteCard: View {
                 HStack(spacing: 6) {
                     ForEach(tokens, id: \.self) { token in
                         Pill(text: token.capitalized, color: color)
+                    }
+                }
+            }
+            .scrollIndicators(.never)
+        }
+    }
+}
+
+struct ScoutFocusCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        let focus = model.scoutFocus
+        IFMCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Scout Focus").font(.headline)
+                        Text("What the scout hunts for — tuned from what you actually build and keep, not just your written query.")
+                            .font(.caption)
+                            .foregroundStyle(IFMTheme.muted)
+                    }
+                    Spacer()
+                    Image(systemName: "scope").foregroundStyle(IFMTheme.green)
+                }
+
+                if focus.isEmpty {
+                    Text("Searching your missions as written for now. Record a build outcome or mark ideas Ready, and the scout starts leaning toward your proven themes and away from lanes you've abandoned.")
+                        .font(.caption)
+                        .foregroundStyle(IFMTheme.muted)
+                        .padding(.vertical, 2)
+                } else {
+                    if !focus.focusTerms.isEmpty {
+                        focusRow(title: "Hunting harder for", color: IFMTheme.green, terms: focus.focusTerms)
+                    }
+                    if !focus.avoidTerms.isEmpty {
+                        focusRow(title: "Steering away from", color: IFMTheme.red, terms: focus.avoidTerms)
+                    }
+                }
+            }
+        }
+    }
+
+    private func focusRow(title: String, color: Color, terms: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.caption.bold()).foregroundStyle(color)
+            ScrollView(.horizontal) {
+                HStack(spacing: 6) {
+                    ForEach(terms, id: \.self) { term in
+                        Pill(text: term.capitalized, color: color)
                     }
                 }
             }

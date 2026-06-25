@@ -70,12 +70,13 @@ public enum AutonomousScout {
         signals: [ScoutSignal],
         provider: any LLMProvider,
         model: LLMModel,
-        apiKey: String
+        apiKey: String,
+        focus: ScoutFocus? = nil
     ) async throws -> ExtractedSeed? {
         let request = LLMRequest(
             taskClass: .prototypeBrief,
             prompt: synthesisPrompt(profile: profile),
-            input: synthesisInput(mission: mission, signals: signals),
+            input: synthesisInput(mission: mission, signals: signals, focus: focus),
             maxOutputTokens: 700
         )
         let response = try await provider.send(request, model: model, apiKey: apiKey)
@@ -99,11 +100,19 @@ public enum AutonomousScout {
         """
     }
 
-    static func synthesisInput(mission: ScoutMission, signals: [ScoutSignal]) -> String {
+    static func synthesisInput(mission: ScoutMission, signals: [ScoutSignal], focus: ScoutFocus? = nil) -> String {
+        var parts = ["Mission: \(mission.query)"]
+        if let focus, !focus.focusTerms.isEmpty {
+            parts.append("Lean toward these proven themes (the builder ships work in these lanes): \(focus.focusTerms.joined(separator: ", ")).")
+        }
+        if let focus, !focus.avoidTerms.isEmpty {
+            parts.append("Avoid: \(focus.avoidTerms.joined(separator: ", ")).")
+        }
         let lines = signals.prefix(6).map { signal in
             "- \(signal.title): \(signal.summary)\(signal.url.map { " (\($0))" } ?? "")"
         }.joined(separator: "\n")
-        return "Mission: \(mission.query)\n\nSignals:\n\(lines)"
+        parts.append("Signals:\n\(lines)")
+        return parts.joined(separator: "\n\n")
     }
 
     /// Extract an `ExtractedSeed` from a possibly-chatty model reply (handles ```json

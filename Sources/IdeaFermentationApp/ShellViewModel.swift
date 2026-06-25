@@ -785,8 +785,12 @@ public final class ShellViewModel: ObservableObject {
                 return false
             }
             let shouldUseWeb = useWeb && autonomyProfile.allowWebScouting
-            let webSignals = shouldUseWeb ? await scoutSignals(for: mission) : []
-            let filteredWebSignals = AutonomousScout.filterSignals(webSignals, profile: autonomyProfile)
+            // Self-tuning brief: search the operator's proven lanes, not just the
+            // literal mission query, and drop signals in lanes they've abandoned.
+            let focus = scoutFocus
+            let webSignals = shouldUseWeb ? await scoutSignals(query: focus.augment(query: mission.query)) : []
+            let profileFiltered = AutonomousScout.filterSignals(webSignals, profile: autonomyProfile)
+            let filteredWebSignals = focus.filter(profileFiltered)
             let signals = filteredWebSignals.isEmpty ? AutonomousScout.fallbackSignals(profile: autonomyProfile, mission: mission) : filteredWebSignals
             let sourceIDs = try saveScoutSources(signals, mission: mission)
 
@@ -806,7 +810,7 @@ public final class ShellViewModel: ObservableObject {
                 // A real synthesis call (when web scouting + a cloud key + the spend
                 // cap allow) proposes an ORIGINAL idea from the signals; otherwise the
                 // deterministic template. Either way it's source-backed and local-scored.
-                let synthesized = shouldUseWeb ? await synthesizeScoutIdea(mission: mission, signals: signals) : nil
+                let synthesized = shouldUseWeb ? await synthesizeScoutIdea(mission: mission, signals: signals, focus: focus) : nil
                 let seed = synthesized ?? AutonomousScout.draftIdea(profile: autonomyProfile, mission: mission, signals: signals)
                 var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
                 idea.sourceIDs = sourceIDs
@@ -1384,7 +1388,7 @@ public final class ShellViewModel: ObservableObject {
     /// signals. Returns nil (caller falls back to the template) unless a usable
     /// provider key exists and the day's spend cap still has room — so an
     /// autonomous run can never silently blow the budget.
-    private func synthesizeScoutIdea(mission: ScoutMission, signals: [ScoutSignal]) async -> ExtractedSeed? {
+    private func synthesizeScoutIdea(mission: ScoutMission, signals: [ScoutSignal], focus: ScoutFocus) async -> ExtractedSeed? {
         let providers = ProviderFactory.defaultProviders(settings: providerSettings)
         let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: 600, outputTokens: 500)
         guard let provider = providers.first(where: { $0.providerName == route.provider }),
@@ -1395,7 +1399,7 @@ public final class ShellViewModel: ObservableObject {
         do {
             guard let seed = try await AutonomousScout.synthesize(
                 profile: autonomyProfile, mission: mission, signals: signals,
-                provider: provider, model: model, apiKey: key
+                provider: provider, model: model, apiKey: key, focus: focus
             ) else { return nil }
             try? store.saveUsage(LLMUsageRecord(
                 provider: provider.providerName, model: model.name, taskClass: .prototypeBrief,
@@ -1414,18 +1418,24 @@ public final class ShellViewModel: ObservableObject {
         return spent + estimatedCost <= schedulerSettings.dailySpendCapUSD
     }
 
-    private func scoutSignals(for mission: ScoutMission) async -> [ScoutSignal] {
+    /// The self-tuning scout brief — derived live from what the operator has built,
+    /// kept, and abandoned. Empty until there is real signal.
+    public var scoutFocus: ScoutFocus {
+        ScoutFocus.derive(taste: tasteModel, outcomes: buildOutcomes, ideas: ideas, profile: autonomyProfile)
+    }
+
+    private func scoutSignals(query: String) async -> [ScoutSignal] {
         var signals: [ScoutSignal] = []
         if let firecrawlKey = KeychainStore.load(.firecrawl) {
             let firecrawl = FirecrawlSearchProvider()
-            signals += (try? await firecrawl.search(query: mission.query, limit: 5, apiKey: firecrawlKey)) ?? []
+            signals += (try? await firecrawl.search(query: query, limit: 5, apiKey: firecrawlKey)) ?? []
         }
         if signals.count < 2, let openAIKey = KeychainStore.load(.openAI) {
             let openAI = OpenAIWebSearchProvider()
-            signals += (try? await openAI.search(query: mission.query, limit: 5, apiKey: openAIKey)) ?? []
+            signals += (try? await openAI.search(query: query, limit: 5, apiKey: openAIKey)) ?? []
         }
         if signals.isEmpty {
-            signals = (try? await AutonomousScout.webSignals(for: mission, limit: 5)) ?? []
+            signals = (try? await AutonomousScout.webSignals(for: ScoutMission(title: query, query: query), limit: 5)) ?? []
         }
         return Array(unique(signals).prefix(6))
     }

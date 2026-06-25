@@ -146,7 +146,16 @@ Idea Fermentation Machine should become a local-first autonomous thinking agent,
     it reinforces the taste model *harder* than a mark-ready, composts the idea into
     the Archive with its real outcome, and feeds the cloud-synthesis memory digest as
     a lead lesson. Closes "learn from successful builds."
-  - Still to do: tune scout briefs (what it goes looking for) from the same signals.
+  - **Scout-brief self-tuning:** a derived `ScoutFocus` (focus themes + avoid themes,
+    weighted by build outcomes > ready/archive decisions > learned taste) augments
+    each mission's search query toward the operator's proven lanes, filters out
+    abandoned-lane signals, and biases the synthesis prompt. So the scout doesn't just
+    *score* and *synthesize* better — it *hunts* better. Surfaced in Autonomy → Scout
+    Focus. Closes "update scout briefs from the learning signal."
+
+The full Hermes learning loop is now closed end to end: capture → ferment →
+semantic scoring → build → outcome → taste model + agent memory + scout focus →
+sharper hunting, scoring, and synthesis next cycle.
 
 ## Guardrails
 
