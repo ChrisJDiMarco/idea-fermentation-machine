@@ -75,9 +75,10 @@ public final class FermentationEngine {
     @discardableResult
     public func runLocalPass(maxIdeas: Int = 25) throws -> [IdeaSeed] {
         let corpus = try store.listIdeas()
+        let outcomes = (try? store.buildOutcomes()) ?? []
         let ideas = corpus.prefix(maxIdeas)
         return try ideas.map { idea in
-            let updated = localUpdate(idea, corpus: corpus)
+            let updated = localUpdate(idea, corpus: corpus, outcomes: outcomes)
             try store.upsertIdea(updated)
             try persistStructuredLocalResults(for: updated)
             let job = try store.enqueue(FermentationJob(
@@ -114,7 +115,7 @@ public final class FermentationEngine {
     @discardableResult
     public func processIdeaLocally(_ idea: IdeaSeed) throws -> IdeaSeed {
         let corpus = try store.listIdeas()
-        let updated = localUpdate(idea, corpus: corpus)
+        let updated = localUpdate(idea, corpus: corpus, outcomes: (try? store.buildOutcomes()) ?? [])
         try store.upsertIdea(updated)
         try persistStructuredLocalResults(for: updated)
         return updated
@@ -285,7 +286,8 @@ public final class FermentationEngine {
             try store.upsertSource(next)
             try store.saveRunLog(AgentRunLog(jobID: job.id, agentName: "Local Source Agent", promptVersion: "local-v2", inputTrace: sourceID.uuidString, output: summary.summary, modelUsed: "Local/heuristic-v2"))
         } else if let ideaID = job.ideaID {
-            let idea = localUpdate(try store.idea(id: ideaID), corpus: try store.listIdeas())
+            let corpus = try store.listIdeas()
+            let idea = localUpdate(try store.idea(id: ideaID), corpus: corpus, outcomes: (try? store.buildOutcomes()) ?? [])
             try store.upsertIdea(idea)
             try persistStructuredLocalResults(for: idea)
             try store.saveRunLog(AgentRunLog(jobID: job.id, agentName: "Local Fermentation Agent", promptVersion: "local-v2", inputTrace: ideaID.uuidString, output: "Updated \(idea.title) to ripeness \(Int(idea.ripeness)).", modelUsed: "Local/heuristic-v2"))
@@ -426,7 +428,7 @@ public final class FermentationEngine {
         return min(100, 0.6 * distance + 0.4 * lexical)
     }
 
-    private func localUpdate(_ idea: IdeaSeed, corpus: [IdeaSeed]) -> IdeaSeed {
+    private func localUpdate(_ idea: IdeaSeed, corpus: [IdeaSeed], outcomes: [BuildOutcome] = []) -> IdeaSeed {
         var next = idea
         let tokens = Tokenizer.vocabulary("\(idea.title) \(idea.body) \(idea.manualTags.joined(separator: " "))")
         let sourceCount = idea.sourceIDs.count
@@ -456,7 +458,16 @@ public final class FermentationEngine {
         // Exactly 0 until something has been taught, so a fresh install scores
         // identically. Applied before the exclusion cap so a written exclusion always
         // overrides a learned preference.
-        let affinity = taste.learnedAffinity(TasteModel.themeTerms(title: idea.title, tags: idea.manualTags))
+        // Two views of learned taste: the token model (do the words match what you like)
+        // and the concept-space manifold (does this idea SIT near what you build, by
+        // meaning). The manifold excludes this idea so it never grades its own centroid,
+        // and its weight ramps in from a sliver — until it has signal it's a no-op, so
+        // behavior is unchanged without it.
+        let manifold = TasteManifold.build(ideas: corpus, outcomes: outcomes, excluding: idea.id)
+        let tokenAffinity = taste.learnedAffinity(TasteModel.themeTerms(title: idea.title, tags: idea.manualTags))
+        let conceptAffinity = manifold.affinity(for: idea.embedding)
+        let conceptWeight = manifold.blendWeight
+        let affinity = tokenAffinity * (1 - conceptWeight) + conceptAffinity * conceptWeight
         resonance = min(100, max(0, resonance + affinity * Self.learnedResonanceWeight))
         // Explicitly excluded topics should never resonate — and so never ripen.
         if taste.isExcluded(tokens) {

@@ -215,6 +215,9 @@ public final class ShellViewModel: ObservableObject {
     @Published var portfolioReport: PortfolioReport?
     @Published var tasteProfile: TasteProfile?
     @Published var ripenessCalibration = RipenessCalibration()
+    /// Concept-space taste over the whole portfolio. Cached here and rebuilt in
+    /// reload() (after every mutation) so the UI never recomputes centroids per render.
+    @Published var conceptTaste = TasteManifold()
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -291,6 +294,9 @@ public final class ShellViewModel: ObservableObject {
             portfolioReport = try store.loadPortfolioReport()
             tasteProfile = try store.loadTasteProfile()
             ripenessCalibration = try store.loadRipenessCalibration()
+            // Built from the FULL corpus (not the search-filtered view) so the counts and
+            // local-scoring manifold reflect the whole portfolio.
+            conceptTaste = TasteManifold.build(ideas: try store.listIdeas(), outcomes: buildOutcomes)
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {

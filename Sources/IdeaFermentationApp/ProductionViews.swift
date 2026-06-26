@@ -549,6 +549,8 @@ struct LearnedTasteCard: View {
                     learnedThemes
                 }
 
+                conceptSpaceNote
+
                 actions
             }
         }
@@ -629,6 +631,27 @@ struct LearnedTasteCard: View {
             if !themes.liked.isEmpty {
                 themeRow(title: "Themes it tracks", color: IFMTheme.slate, tokens: themes.liked.map(\.token))
             }
+        }
+    }
+
+    @ViewBuilder
+    private var conceptSpaceNote: some View {
+        let manifold = model.conceptTaste
+        if manifold.isActive {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "scope")
+                    .font(.caption2)
+                    .foregroundStyle(IFMTheme.green)
+                    .padding(.top, 1)
+                Text("Scoring new ideas in concept space — by how close they sit to your \(manifold.likedCount) committed vs \(manifold.dislikedCount) dropped ideas, not just matching words.")
+                    .font(.caption2)
+                    .foregroundStyle(IFMTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(IFMTheme.green.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: IFMRadius.sm, style: .continuous))
         }
     }
 
