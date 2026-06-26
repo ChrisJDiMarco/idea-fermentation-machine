@@ -29,7 +29,7 @@ public enum IFMPage: String, CaseIterable, Identifiable, Sendable {
         case .sources: "Sources"
         case .patterns: "Patterns"
         case .settings: "Settings"
-        case .autonomy: "Automation"
+        case .autonomy: "The Mind"
         case .costCenter: "Cost Center"
         case .privacyCenter: "Privacy Center"
         }
@@ -45,7 +45,7 @@ public enum IFMPage: String, CaseIterable, Identifiable, Sendable {
         case .sources: "Notes, links, captures"
         case .patterns: "Connections found"
         case .settings: "Keys and data"
-        case .autonomy: "Master switch & scout"
+        case .autonomy: "Thinks for itself"
         case .costCenter: "Spend and queue"
         case .privacyCenter: "Cloud controls"
         }
@@ -61,7 +61,7 @@ public enum IFMPage: String, CaseIterable, Identifiable, Sendable {
         case .sources: "doc.text"
         case .patterns: "circle.grid.3x3"
         case .settings: "gearshape"
-        case .autonomy: "bolt.badge.automatic"
+        case .autonomy: "brain.head.profile"
         case .costCenter: "chart.pie"
         case .privacyCenter: "lock.shield"
         }
@@ -227,6 +227,14 @@ public final class ShellViewModel: ObservableObject {
     /// can't make the global nav badges drop to the filtered subset.
     @Published var statusCounts: [IdeaStatus: Int] = [:]
     @Published var totalSourceCount = 0
+    // MARK: The autonomous mind — its latest cycle and the evolving thought web.
+    @Published var latestThinkingSession: ThinkingSession?
+    @Published var thinkingSessions: [ThinkingSession] = []
+    @Published var mindThoughts: [Thought] = []
+    @Published var mindEdges: [ThoughtEdge] = []
+    @Published var thoughtCount = 0
+    @Published var connectionCount = 0
+    @Published var isThinking = false
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -246,6 +254,10 @@ public final class ShellViewModel: ObservableObject {
     /// against the same headroom and jointly overshoot. Mutated only on @MainActor.
     private var reservedSpendUSD: Double = 0
     private var schedulerTask: Task<Void, Never>?
+    /// Drives the mind's auto-cadence while the app is open. Started/stopped from the master
+    /// toggle; fires a cloud cycle every `mindCadenceInterval` when there's headroom.
+    private var mindTimer: Timer?
+    private let mindCadenceInterval: TimeInterval = 1_800 // ~30 min
     let inbox = InboxPageViewModel()
     let fermenting = FermentingPageViewModel()
     let ripening = RipeningPageViewModel()
@@ -312,8 +324,15 @@ public final class ShellViewModel: ObservableObject {
             conceptTaste = TasteManifold.build(ideas: corpus, outcomes: buildOutcomes)
             spentTodayUSD = (try? store.usageTotalUSD(since: Calendar.current.startOfDay(for: Date()))) ?? 0
             forecastAccuracy = refreshForecasts(corpus: corpus)
+            thinkingSessions = (try? store.thinkingSessions(limit: 30)) ?? []
+            latestThinkingSession = thinkingSessions.first
+            mindThoughts = (try? store.thoughts(limit: 120)) ?? []
+            mindEdges = (try? store.thoughtEdges(limit: 200)) ?? []
+            thoughtCount = (try? store.thoughtCount()) ?? mindThoughts.count
+            connectionCount = (try? store.thoughtEdgeCount()) ?? mindEdges.count
             metrics = try makeMetrics(corpus: corpus)
             refreshPageModels()
+            syncMindCadence()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -1399,9 +1418,195 @@ public final class ShellViewModel: ObservableObject {
         try store.saveScoutMissions(scoutMissions)
     }
 
+    // MARK: - The autonomous mind
+
+    /// Run one cognitive cycle: the mind reasons across your ideas + its prior thoughts, draws
+    /// connections into the web, generates an idea, and critiques its own thinking. Cloud-first
+    /// on the strongest model; falls back to a real local cycle (manual runs only) when there's
+    /// no key or the cap is reached. Never-send material is filtered out before anything cloud-bound.
+    public func think(auto: Bool = false) async {
+        // One paid cloud operation at a time — don't overlap with another cycle, a queued job,
+        // or a scout run, all of which draw on the same spend headroom.
+        guard !isThinking, !isRunningJob, !isRunningScout else { return }
+
+        let corpus = (try? store.listIdeas()) ?? ideas
+        let allSources = (try? store.listSources()) ?? sources
+        // Privacy: only untainted material may reach the cloud. An idea is safe when it neither
+        // carries the inherited taint flag nor links to a never-send source; thoughts derived
+        // from protected material are excluded too.
+        let neverSendSourceIDs = Set(allSources.filter(\.neverSendToCloud).map(\.id))
+        let safeIdeas = corpus.filter { !$0.derivedFromNeverSend && Set($0.sourceIDs).isDisjoint(with: neverSendSourceIDs) }
+        let safeSources = allSources.filter { !$0.neverSendToCloud }
+        let safeThoughts = mindThoughts.filter { !$0.derivedFromNeverSend }
+
+        let cloudMaterial = CognitiveLoop.Material(
+            ideas: safeIdeas, sources: safeSources, signals: [],
+            priorThoughts: safeThoughts, derivedFromNeverSend: false
+        )
+
+        // Three calls of decreasing size (reason → generate → reflect). Estimate each honestly
+        // and reserve the sum, mirroring the deep-critique reservation discipline.
+        let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: 1_600, outputTokens: 1_100)
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+        let provider = providers.first(where: { $0.providerName == route.provider })
+        let key = provider.flatMap { apiKey(for: $0.providerName) }
+        let model = provider?.availableModels.first(where: { $0.name == route.model }) ?? provider?.availableModels.first
+
+        let reasonCost = route.estimatedCostUSD ?? 0
+        let genCost = model.flatMap { CostEstimator.estimate(model: $0, inputTokens: 900, outputTokens: 700) } ?? 0
+        let reflectCost = model.flatMap { CostEstimator.estimate(model: $0, inputTokens: 700, outputTokens: 500) } ?? 0
+        let estimatedTotal = reasonCost + genCost + reflectCost
+
+        // A priced model must fit the caps. An unpriced one runs only on a manual press — the
+        // unattended cadence must never spend on a model whose cost the ledger can't track
+        // (matching the unattended scout's refuse-if-unpriced discipline).
+        let affordable = route.estimatedCostUSD == nil ? !auto : fitsSpendCaps(estimatedTotal)
+        let canCloud = cloudMaterial.hasEnoughToThinkAbout
+            && provider != nil && key != nil && model != nil
+            && affordable
+
+        guard canCloud, let provider, let key, let model else {
+            // Auto cadence stays quiet when it can't think for real; a manual press still gets a
+            // local cycle so the button always does something.
+            if auto { return }
+            await runLocalThink(material: localMaterial(corpus: corpus, sources: allSources))
+            return
+        }
+
+        let releaseReservation = reserveSpend(estimatedTotal)
+        isThinking = true
+        let taste = tasteProfile?.source.hasPrefix("cloud") == true ? tasteProfile : nil
+        let builder = autonomyProfile
+        Task {
+            defer { Task { @MainActor in releaseReservation(); self.isThinking = false } }
+            do {
+                let result = try await CognitiveLoop.think(
+                    material: cloudMaterial, taste: taste, builderProfile: builder,
+                    provider: provider, model: model, apiKey: key
+                )
+                await MainActor.run {
+                    // Record every call that came back, even a degraded cycle, so spend stays honest.
+                    for response in result?.responses ?? [] {
+                        self.recordPortfolioUsage(provider: provider, model: model, response: response, taskClass: .prototypeBrief)
+                    }
+                    guard let result, !result.thoughts.isEmpty else {
+                        if !auto { self.commit(self.localCognition(corpus: corpus, sources: allSources)) }
+                        else { self.errorMessage = "The mind ran but produced nothing usable this cycle." }
+                        return
+                    }
+                    self.commit(result)
+                    let n = result.thoughts.count
+                    self.errorMessage = "The mind thought about \"\(result.session.focus)\" — formed \(n) thought\(n == 1 ? "" : "s") and \(result.generated.count) idea\(result.generated.count == 1 ? "" : "s"). See the Automation page."
+                }
+            } catch {
+                await MainActor.run {
+                    if !auto { self.commit(self.localCognition(corpus: corpus, sources: allSources)) }
+                    else { self.errorMessage = nil }
+                }
+            }
+        }
+    }
+
+    /// Persist a finished cycle: admit its generated ideas into the inbox (taste/privacy aware),
+    /// stamp their IDs + the real cost onto the session, then save the session and its web.
+    private func commit(_ result: CognitiveResult?) {
+        guard let result else { return }
+        var session = result.session
+        let cost = result.responses.reduce(0.0) { sum, r in
+            sum + (CostEstimator.estimate(model: modelStub(for: r), inputTokens: r.inputTokens, outputTokens: r.outputTokens) ?? 0)
+        }
+        var generatedIDs: [UUID] = []
+        for seed in result.generated {
+            if let id = admitGeneratedIdea(seed, tainted: session.derivedFromNeverSend) { generatedIDs.append(id) }
+        }
+        session.generatedIdeaIDs = generatedIDs
+        session.costUSD = cost
+        do {
+            try store.saveThinkingSession(session, thoughts: result.thoughts, edges: result.edges)
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        reload()
+    }
+
+    /// Cost is recorded per-call by `recordPortfolioUsage`; for the session total we re-estimate
+    /// from each response using its own model's pricing (looked up by name across all providers).
+    private func modelStub(for response: LLMResponse) -> LLMModel {
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+        if let model = providers.flatMap(\.availableModels).first(where: { $0.name == response.model }) { return model }
+        return LLMModel(provider: response.provider, name: response.model, displayName: response.model, inputCostPerMillion: nil, outputCostPerMillion: nil, pricingURL: "", verifiedOn: "")
+    }
+
+    private func runLocalThink(material: CognitiveLoop.Material) async {
+        commit(localCognition(material: material))
+    }
+
+    private func localCognition(corpus: [IdeaSeed], sources: [SourceItem]) -> CognitiveResult? {
+        localCognition(material: localMaterial(corpus: corpus, sources: sources))
+    }
+
+    private func localCognition(material: CognitiveLoop.Material) -> CognitiveResult? {
+        guard let result = CognitiveLoop.localThink(material: material) else {
+            errorMessage = "The mind needs at least two ideas to find connections — capture a few more."
+            return nil
+        }
+        return result
+    }
+
+    /// Local cycles may reason over protected material; mark the cycle tainted so anything it
+    /// forms (thoughts + generated ideas) inherits the never-send flag.
+    private func localMaterial(corpus: [IdeaSeed], sources: [SourceItem]) -> CognitiveLoop.Material {
+        let neverSendSourceIDs = Set(sources.filter(\.neverSendToCloud).map(\.id))
+        let tainted = corpus.contains { $0.derivedFromNeverSend || !Set($0.sourceIDs).isDisjoint(with: neverSendSourceIDs) }
+        return CognitiveLoop.Material(ideas: corpus, sources: sources, priorThoughts: mindThoughts, derivedFromNeverSend: tainted)
+    }
+
+    /// Create an inbox idea from a mind-generated seed and queue it for a local ripeness pass,
+    /// mirroring how the scout admits its output. Returns the new idea's ID.
+    private func admitGeneratedIdea(_ seed: ExtractedSeed, tainted: Bool) -> UUID? {
+        do {
+            var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
+            if tainted {
+                idea.derivedFromNeverSend = true
+                try store.upsertIdea(idea)
+            }
+            _ = try store.enqueue(FermentationJob(
+                ideaID: idea.id, taskClass: .scoreRipeness, estimatedCostUSD: 0,
+                modelRoute: ModelRoute(provider: "Local", model: "mind-v1", taskClass: .scoreRipeness,
+                                       rationale: "The mind's idea gets a local ripeness pass.", estimatedCostUSD: 0, needsApproval: false),
+                inputHash: TextHashing.sha256("mind\n\(idea.title)\n\(idea.body)")
+            ))
+            return idea.id
+        } catch {
+            errorMessage = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Clear the mind's accumulated web + sessions (ideas are untouched).
+    public func clearMind() {
+        do { try store.clearMind() } catch { errorMessage = error.localizedDescription }
+        reload()
+    }
+
+    /// Start/stop the auto-cadence to match the master toggle. Idempotent.
+    func syncMindCadence() {
+        if autonomyProfile.isEnabled {
+            guard mindTimer == nil else { return }
+            let timer = Timer.scheduledTimer(withTimeInterval: mindCadenceInterval, repeats: true) { [weak self] _ in
+                Task { @MainActor in await self?.think(auto: true) }
+            }
+            mindTimer = timer
+        } else {
+            mindTimer?.invalidate()
+            mindTimer = nil
+        }
+    }
+
     @discardableResult
     public func runAutonomousScout(useWeb: Bool = true, scheduledOnly: Bool = false, now: Date = Date()) async -> Bool {
-        guard !isRunningScout else { return false }
+        // Don't overlap with a cognitive cycle — both are paid cloud work on shared headroom.
+        guard !isRunningScout, !isThinking else { return false }
         isRunningScout = true
         defer { isRunningScout = false }
         do {

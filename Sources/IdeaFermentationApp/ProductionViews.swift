@@ -357,11 +357,16 @@ struct AutonomyPage: View {
     @ObservedObject var model: ShellViewModel
 
     var body: some View {
-        PageScaffold(title: "Automation", subtitle: "One switch runs the autonomous engine — scouting your lanes, learning your taste, and proposing source-backed ideas on your schedule.", symbol: "bolt.badge.automatic", accent: IFMTheme.green) {
+        PageScaffold(title: "The Mind", subtitle: "An autonomous mind that thinks for itself — reasoning across your ideas, connecting them into a web, generating new ones, and checking its own thinking.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
             VStack(alignment: .leading, spacing: IFMSpacing.xl) {
                 AutomationHeroCard(model: model)
 
-                automationGroup(title: "Scout", subtitle: "What it hunts for and the candidates it brings back.", symbol: "scope", accent: IFMTheme.green) {
+                automationGroup(title: "How it's thinking", subtitle: "Its latest train of thought — and how it judged its own reasoning.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
+                    StreamOfThoughtCard(model: model)
+                    ThoughtWebCard(model: model)
+                }
+
+                automationGroup(title: "What it pays attention to", subtitle: "The lanes it researches and the candidates it brings back.", symbol: "scope", accent: IFMTheme.green) {
                     ScoutMissionsCard(model: model)
                     ScoutFocusCard(model: model)
                     AutomationProfileCard(model: model)
@@ -412,13 +417,13 @@ struct AutomationHeroCard: View {
         IFMCard(padding: IFMSpacing.xl) {
             VStack(alignment: .leading, spacing: IFMSpacing.lg) {
                 HStack(alignment: .center, spacing: IFMSpacing.md) {
-                    SymbolBadge(symbol: on ? "bolt.fill" : "bolt.slash", color: accent, size: 54)
+                    SymbolBadge(symbol: model.isThinking ? "brain.head.profile.fill" : (on ? "brain.head.profile" : "brain"), color: accent, size: 54)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(on ? "Autonomous mode is ON" : "Autonomous mode is OFF")
+                        Text(model.isThinking ? "The Mind is thinking…" : (on ? "The Mind is ON" : "The Mind is OFF"))
                             .font(.ifmTitle)
                         Text(on
-                             ? "The scout is working your lanes and saving source-backed candidates for review."
-                             : "Turn it on to let the scout research your lanes and propose ideas — on your schedule, within your caps.")
+                             ? "It reasons across your ideas, draws connections into its web, generates new ideas, and critiques its own thinking — on its own every ~30 min, within your caps."
+                             : "Turn it on to let the mind think for itself: research your lanes, connect ideas, generate new ones, and check its own reasoning — on your schedule, within your caps.")
                             .font(.ifmBody)
                             .foregroundStyle(IFMTheme.muted)
                             .fixedSize(horizontal: false, vertical: true)
@@ -429,33 +434,51 @@ struct AutomationHeroCard: View {
                         .toggleStyle(.switch)
                         .tint(IFMTheme.green)
                         .scaleEffect(1.25)
-                        .accessibilityLabel("Autonomous mode")
+                        .accessibilityLabel("The Mind")
                         .onChange(of: model.autonomyProfile.isEnabled) { _, _ in model.persistAutonomyConfiguration() }
                 }
 
                 HStack(spacing: IFMSpacing.sm) {
-                    StatTile(value: lastRan, label: "Last ran", symbol: "clock.arrow.circlepath", accent: on ? IFMTheme.text : IFMTheme.muted)
-                    StatTile(value: nextDue, label: "Next due", symbol: "calendar", accent: on ? IFMTheme.text : IFMTheme.muted)
-                    StatTile(value: "\(model.scoutMissions.filter(\.isEnabled).count)", label: "Active missions", symbol: "scope", accent: on ? IFMTheme.green : IFMTheme.muted)
+                    StatTile(value: "\(model.thoughtCount)", label: "Thoughts", symbol: "brain", accent: on ? IFMTheme.purple : IFMTheme.muted)
+                    StatTile(value: "\(model.connectionCount)", label: "Connections", symbol: "point.topleft.down.to.point.bottomright.curvepath", accent: on ? IFMTheme.blue : IFMTheme.muted)
+                    StatTile(value: confidenceText, label: "Confidence", sub: "last cycle", symbol: "gauge.medium", accent: on ? IFMTheme.green : IFMTheme.muted)
                     StatTile(value: spentToday, label: "Spent today", sub: "of \(capText)", symbol: "dollarsign.circle", accent: spendAccent)
                 }
                 .opacity(on ? 1 : 0.7)
 
-                Button {
-                    Task { await model.runAutonomousScout() }
-                } label: {
-                    HStack(spacing: 6) {
-                        if model.isRunningScout { ProgressView().controlSize(.small) }
-                        else { Image(systemName: "play.fill") }
-                        Text(model.isRunningScout ? "Scouting…" : "Run Scout Now")
+                HStack(spacing: IFMSpacing.sm) {
+                    Button {
+                        Task { await model.think() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if model.isThinking { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "sparkles") }
+                            Text(model.isThinking ? "Thinking…" : "Think Now")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 34)
                     }
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 34)
+                    .buttonStyle(.borderedProminent)
+                    .tint(IFMTheme.purple)
+                    .disabled(model.isThinking || model.isRunningJob || model.isRunningScout)
+                    .help("Run one cognitive cycle now — reason, connect, generate, and reflect.")
+
+                    Button {
+                        Task { await model.runAutonomousScout() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            if model.isRunningScout { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "scope") }
+                            Text(model.isRunningScout ? "Scouting…" : "Run Scout")
+                        }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 34)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(IFMTheme.green)
+                    .disabled(model.isRunningScout || model.isThinking || model.isRunningJob || !on)
+                    .help(on ? "Run a single scout pass to bring in fresh signals." : "Turn the Mind on to run the scout.")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(IFMTheme.green)
-                .disabled(model.isRunningScout || !on)
-                .help(on ? "Run a scout pass right now." : "Turn autonomous mode on to run the scout.")
             }
         }
         .overlay(alignment: .leading) {
@@ -467,21 +490,9 @@ struct AutomationHeroCard: View {
         .animation(IFMMotion.standard, value: on)
     }
 
-    private var lastRan: String {
-        guard let log = model.logs.first(where: { $0.agentName == "Scout Agent" }) else { return "Never" }
-        return Self.relative.localizedString(for: log.createdAt, relativeTo: Date())
-    }
-
-    private var nextDue: String {
-        let enabled = model.scoutMissions.filter(\.isEnabled)
-        guard !enabled.isEmpty else { return "—" }
-        let now = Date()
-        let runs: [Date] = enabled.map { mission in
-            guard let last = mission.lastRunAt else { return now }
-            return Date(timeInterval: Double(max(1, mission.cadenceHours) * 3600), since: last)
-        }
-        guard let soonest = runs.min() else { return "—" }
-        return soonest <= now ? "Now" : Self.relative.localizedString(for: soonest, relativeTo: now)
+    private var confidenceText: String {
+        guard let confidence = model.latestThinkingSession?.reflection.confidence else { return "—" }
+        return "\(Int((confidence * 100).rounded()))%"
     }
 
     private var spentToday: String { String(format: "$%.2f", model.spentTodayUSD) }
@@ -493,6 +504,306 @@ struct AutomationHeroCard: View {
         if fraction >= 1 { return IFMTheme.red }
         if fraction >= 0.8 { return IFMTheme.orange }
         return IFMTheme.green
+    }
+}
+
+// MARK: - The Mind's cycle
+
+/// The latest cognitive cycle as a readable chain, ending in the metacognition — the mind's
+/// critique of its own reasoning.
+struct StreamOfThoughtCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        SectionCard("Latest train of thought", subtitle: "What it reasoned through last cycle.", symbol: "text.append", accent: IFMTheme.purple, trailing: {
+            if let session = model.latestThinkingSession {
+                Pill(text: session.source, color: session.isCloud ? IFMTheme.purple : IFMTheme.slate)
+            }
+        }) {
+            if let session = model.latestThinkingSession {
+                VStack(alignment: .leading, spacing: IFMSpacing.md) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("THINKING ABOUT").font(.ifmEyebrow).foregroundStyle(IFMTheme.muted)
+                        Text(session.focus).font(.system(size: 15, weight: .semibold))
+                    }
+                    if !session.analysis.isEmpty {
+                        Text(session.analysis).font(.ifmBody).foregroundStyle(IFMTheme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    let sessionThoughts = model.mindThoughts.filter { $0.sessionID == session.id }
+                    if !sessionThoughts.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(sessionThoughts) { ThoughtRow(thought: $0) }
+                        }
+                    }
+                    if !session.generatedIdeaIDs.isEmpty {
+                        Button { model.selectedPage = .inbox } label: {
+                            Label("Generated \(session.generatedIdeaIDs.count) new idea\(session.generatedIdeaIDs.count == 1 ? "" : "s") — see your Inbox", systemImage: "lightbulb.fill")
+                                .font(.ifmCaption)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(IFMTheme.green)
+                    }
+                    Divider()
+                    ReflectionView(reflection: session.reflection)
+                }
+            } else {
+                VStack(alignment: .leading, spacing: IFMSpacing.sm) {
+                    Text("The mind hasn't thought yet.")
+                        .font(.ifmBody).foregroundStyle(IFMTheme.muted)
+                    Text("Press **Think Now** above to run a cycle, or turn the Mind on to let it think every ~30 minutes.")
+                        .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 6)
+            }
+        }
+    }
+}
+
+private struct ThoughtRow: View {
+    let thought: Thought
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: thought.kind.symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(thoughtKindColor(thought.kind))
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(thought.content).font(.ifmCaption).foregroundStyle(IFMTheme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !thought.rationale.isEmpty {
+                    Text(thought.rationale).font(.system(size: 10)).foregroundStyle(IFMTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 4)
+            Text(thought.kind.label).font(.system(size: 9, weight: .heavy))
+                .foregroundStyle(thoughtKindColor(thought.kind))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(thoughtKindColor(thought.kind).opacity(0.12))
+                .clipShape(Capsule())
+        }
+    }
+}
+
+/// The metacognition surface — the mind judging *how it just thought*, not the ideas.
+private struct ReflectionView: View {
+    let reflection: MindReflection
+    var body: some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.sm) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath").font(.system(size: 11, weight: .bold))
+                Text("HOW IT JUDGED ITS OWN THINKING").font(.ifmEyebrow)
+                Spacer()
+                ConfidenceGauge(value: reflection.confidence)
+            }
+            .foregroundStyle(IFMTheme.purple)
+
+            if reflection.isEmpty {
+                Text("No self-critique was produced this cycle.").font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+            } else {
+                if !reflection.weakestLink.isEmpty {
+                    reflectionLine("Weakest link", reflection.weakestLink, "exclamationmark.triangle", IFMTheme.orange)
+                }
+                if !reflection.assumptions.isEmpty {
+                    reflectionLine("Assumptions it leaned on", reflection.assumptions.joined(separator: " · "), "questionmark.diamond", IFMTheme.slate)
+                }
+                if !reflection.spuriousConnections.isEmpty {
+                    reflectionLine("Links it may have over-drawn", reflection.spuriousConnections.joined(separator: " · "), "scissors", IFMTheme.red)
+                }
+                if !reflection.processNote.isEmpty {
+                    reflectionLine("On its process", reflection.processNote, "gearshape.2", IFMTheme.muted)
+                }
+                if !reflection.nextToExplore.isEmpty {
+                    reflectionLine("Pulling on next", reflection.nextToExplore, "arrow.forward.circle", IFMTheme.blue)
+                }
+            }
+        }
+        .padding(IFMSpacing.md)
+        .background(IFMTheme.purple.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.purple.opacity(0.18)) }
+    }
+
+    @ViewBuilder
+    private func reflectionLine(_ label: String, _ value: String, _ symbol: String, _ color: Color) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(color).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.system(size: 10, weight: .heavy)).foregroundStyle(IFMTheme.muted)
+                Text(value).font(.ifmCaption).foregroundStyle(IFMTheme.text).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+private struct ConfidenceGauge: View {
+    let value: Double
+    var body: some View {
+        HStack(spacing: 5) {
+            ZStack(alignment: .leading) {
+                Capsule().fill(IFMTheme.purple.opacity(0.15)).frame(width: 54, height: 6)
+                Capsule().fill(IFMTheme.purple).frame(width: max(3, 54 * value), height: 6)
+            }
+            Text("\(Int((value * 100).rounded()))%").font(.system(size: 10, weight: .heavy)).foregroundStyle(IFMTheme.purple)
+        }
+    }
+}
+
+/// The structured graph — the latest cycle's thoughts as nodes, its connections as typed,
+/// colour-coded links, with the labelled rationale listed beneath.
+struct ThoughtWebCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    private var nodes: [Thought] {
+        guard let session = model.latestThinkingSession else { return [] }
+        return model.mindThoughts.filter { $0.sessionID == session.id }
+    }
+    private var edges: [ThoughtEdge] {
+        guard let session = model.latestThinkingSession else { return [] }
+        return model.mindEdges.filter { $0.sessionID == session.id }
+    }
+
+    var body: some View {
+        SectionCard("The web", subtitle: "How its thoughts connect — the web grows every cycle.", symbol: "point.3.connected.trianglepath.dotted", accent: IFMTheme.blue, trailing: {
+            Text("\(model.thoughtCount) nodes · \(model.connectionCount) links")
+                .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+        }) {
+            if nodes.count < 2 {
+                Text(model.thoughtCount == 0
+                     ? "No web yet — when the mind thinks, the connections it draws appear here and accumulate across cycles."
+                     : "The latest cycle was sparse. Run another to grow the web.")
+                    .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 6)
+            } else {
+                VStack(alignment: .leading, spacing: IFMSpacing.md) {
+                    ThoughtWebGraph(thoughts: nodes, edges: edges)
+                    if !edges.isEmpty {
+                        EdgeLegend(types: Array(Set(edges.map(\.type))).sorted { $0.label < $1.label })
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(edges) { edge in EdgeRow(edge: edge, nodes: nodes) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ThoughtWebGraph: View {
+    let thoughts: [Thought]
+    let edges: [ThoughtEdge]
+
+    private func positions(in size: CGSize) -> [CGPoint] {
+        let n = thoughts.count
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        guard n > 1 else { return [center] }
+        let radius = min(size.width, size.height) / 2 - 58
+        return (0..<n).map { i in
+            let angle = (Double(i) / Double(n)) * 2 * .pi - .pi / 2
+            return CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let pos = positions(in: geo.size)
+            let index = Dictionary(thoughts.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+            ZStack {
+                Canvas { context, _ in
+                    for edge in edges {
+                        guard let i = index[edge.fromThoughtID], let j = index[edge.toThoughtID], i < pos.count, j < pos.count else { continue }
+                        var path = Path()
+                        path.move(to: pos[i])
+                        path.addLine(to: pos[j])
+                        context.stroke(path, with: .color(thoughtEdgeColor(edge.type).opacity(0.55)),
+                                       style: StrokeStyle(lineWidth: 1.2 + edge.strength * 2.2, lineCap: .round))
+                    }
+                }
+                ForEach(Array(thoughts.enumerated()), id: \.element.id) { i, thought in
+                    if i < pos.count { NodeChip(thought: thought).position(pos[i]) }
+                }
+            }
+        }
+        .frame(height: 320)
+    }
+}
+
+private struct NodeChip: View {
+    let thought: Thought
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: thought.kind.symbol).font(.system(size: 9, weight: .bold))
+            Text(thought.content).lineLimit(2).multilineTextAlignment(.leading)
+        }
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(IFMTheme.text)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .frame(maxWidth: 132)
+        .background(thoughtKindColor(thought.kind).opacity(0.14))
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 8).stroke(thoughtKindColor(thought.kind).opacity(0.45)) }
+        .help(thought.rationale.isEmpty ? thought.content : "\(thought.content)\n\n\(thought.rationale)")
+    }
+}
+
+private struct EdgeLegend: View {
+    let types: [ThoughtEdgeType]
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(types, id: \.self) { type in
+                HStack(spacing: 4) {
+                    Capsule().fill(thoughtEdgeColor(type)).frame(width: 14, height: 3)
+                    Text(type.label).font(.system(size: 10)).foregroundStyle(IFMTheme.muted)
+                }
+            }
+            Spacer()
+        }
+    }
+}
+
+private struct EdgeRow: View {
+    let edge: ThoughtEdge
+    let nodes: [Thought]
+    private func label(_ id: UUID) -> String {
+        nodes.first { $0.id == id }.map { String($0.content.prefix(46)) } ?? "?"
+    }
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Circle().fill(thoughtEdgeColor(edge.type)).frame(width: 6, height: 6).padding(.top, 5)
+            VStack(alignment: .leading, spacing: 1) {
+                (Text(label(edge.fromThoughtID)).foregroundStyle(IFMTheme.text)
+                 + Text("  \(edge.type.label)  ").foregroundStyle(thoughtEdgeColor(edge.type))
+                 + Text(label(edge.toThoughtID)).foregroundStyle(IFMTheme.text))
+                    .font(.system(size: 11, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+                if !edge.rationale.isEmpty {
+                    Text(edge.rationale).font(.system(size: 10)).foregroundStyle(IFMTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
+private func thoughtKindColor(_ kind: ThoughtKind) -> Color {
+    switch kind {
+    case .observation: return IFMTheme.orange
+    case .connection: return IFMTheme.blue
+    case .hypothesis: return IFMTheme.purple
+    case .question: return IFMTheme.slate
+    }
+}
+
+private func thoughtEdgeColor(_ type: ThoughtEdgeType) -> Color {
+    switch type {
+    case .supports: return IFMTheme.green
+    case .contradicts: return IFMTheme.red
+    case .extends: return IFMTheme.blue
+    case .questions: return IFMTheme.slate
+    case .derivesFrom: return IFMTheme.purple
     }
 }
 

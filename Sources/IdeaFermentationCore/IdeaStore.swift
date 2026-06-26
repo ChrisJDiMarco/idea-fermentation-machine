@@ -218,6 +218,45 @@ public final class IdeaStore {
             value TEXT NOT NULL
         )
         """)
+        // The autonomous mind's memory: thinking sessions and the web of thoughts they form.
+        try db.execute("""
+        CREATE TABLE IF NOT EXISTS thinking_sessions (
+            id TEXT PRIMARY KEY,
+            focus TEXT NOT NULL,
+            started_at REAL NOT NULL,
+            analysis TEXT NOT NULL,
+            reflection TEXT NOT NULL,
+            generated_idea_ids TEXT NOT NULL,
+            cost_usd REAL NOT NULL,
+            source TEXT NOT NULL,
+            derived_from_never_send INTEGER NOT NULL DEFAULT 0
+        )
+        """)
+        try db.execute("""
+        CREATE TABLE IF NOT EXISTS thoughts (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            content TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            confidence REAL NOT NULL,
+            related_idea_ids TEXT NOT NULL,
+            created_at REAL NOT NULL,
+            derived_from_never_send INTEGER NOT NULL DEFAULT 0
+        )
+        """)
+        try db.execute("""
+        CREATE TABLE IF NOT EXISTS thought_edges (
+            id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            from_thought_id TEXT NOT NULL,
+            to_thought_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            rationale TEXT NOT NULL,
+            strength REAL NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """)
         try migrateV2Columns()
         try createIndices()
         // The embedding vector space has changed twice. v3 fixed the non-deterministic
@@ -272,7 +311,11 @@ public final class IdeaStore {
             "CREATE INDEX IF NOT EXISTS idx_outcomes_idea ON build_outcomes(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_forecast_idea ON forecast_logs(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_logs_job ON agent_run_logs(job_id)",
-            "CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage_records(created_at)"
+            "CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage_records(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_sessions_started ON thinking_sessions(started_at)",
+            "CREATE INDEX IF NOT EXISTS idx_thoughts_session ON thoughts(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_thoughts_created ON thoughts(created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_edges_session ON thought_edges(session_id)"
         ]
         for statement in statements {
             try db.execute(statement)
@@ -899,6 +942,124 @@ public final class IdeaStore {
     /// resolves, including on re-record.
     public func latestForecast(for ideaID: UUID) throws -> ForecastLog? {
         try forecastLogs().first { $0.ideaID == ideaID }
+    }
+
+    // MARK: - The autonomous mind (thinking sessions + thought web)
+
+    /// Persist one cognitive cycle and the web nodes/edges it formed, in a single transaction
+    /// so a session never lands without its thoughts (or vice-versa).
+    public func saveThinkingSession(_ session: ThinkingSession, thoughts: [Thought], edges: [ThoughtEdge]) throws {
+        try db.transaction {
+            try db.execute("INSERT OR REPLACE INTO thinking_sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+                .text(session.id.uuidString),
+                .text(session.focus),
+                .double(session.startedAt.timeIntervalSince1970),
+                .text(session.analysis),
+                .text(try JSONSupport.encode(session.reflection)),
+                .text(try JSONSupport.encode(session.generatedIdeaIDs.map(\.uuidString))),
+                .double(session.costUSD),
+                .text(session.source),
+                .int(session.derivedFromNeverSend ? 1 : 0)
+            ])
+            for thought in thoughts {
+                try db.execute("INSERT OR REPLACE INTO thoughts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+                    .text(thought.id.uuidString),
+                    .text(thought.sessionID.uuidString),
+                    .text(thought.kind.rawValue),
+                    .text(thought.content),
+                    .text(thought.rationale),
+                    .double(thought.confidence),
+                    .text(try JSONSupport.encode(thought.relatedIdeaIDs.map(\.uuidString))),
+                    .double(thought.createdAt.timeIntervalSince1970),
+                    .int(thought.derivedFromNeverSend ? 1 : 0)
+                ])
+            }
+            for edge in edges {
+                try db.execute("INSERT OR REPLACE INTO thought_edges VALUES (?, ?, ?, ?, ?, ?, ?, ?)", [
+                    .text(edge.id.uuidString),
+                    .text(edge.sessionID.uuidString),
+                    .text(edge.fromThoughtID.uuidString),
+                    .text(edge.toThoughtID.uuidString),
+                    .text(edge.type.rawValue),
+                    .text(edge.rationale),
+                    .double(edge.strength),
+                    .double(edge.createdAt.timeIntervalSince1970)
+                ])
+            }
+        }
+    }
+
+    public func thinkingSessions(limit: Int = 50) throws -> [ThinkingSession] {
+        try db.query("SELECT * FROM thinking_sessions ORDER BY started_at DESC LIMIT ?", [.int(Int64(limit))]).map { row in
+            ThinkingSession(
+                id: UUID(uuidString: row.required("id"))!,
+                focus: row.required("focus"),
+                startedAt: Date(timeIntervalSince1970: row.double("started_at")),
+                analysis: row.required("analysis"),
+                reflection: (try? JSONSupport.decode(MindReflection.self, from: row["reflection"] ?? nil)) ?? MindReflection(),
+                thoughtIDs: [],
+                edgeIDs: [],
+                generatedIdeaIDs: ((try? JSONSupport.decode([String].self, from: row["generated_idea_ids"] ?? nil)) ?? []).compactMap(UUID.init(uuidString:)),
+                costUSD: row.double("cost_usd"),
+                source: row.required("source"),
+                derivedFromNeverSend: (row["derived_from_never_send"] ?? nil).map { Int($0) == 1 } ?? false
+            )
+        }
+    }
+
+    public func latestThinkingSession() throws -> ThinkingSession? {
+        try thinkingSessions(limit: 1).first
+    }
+
+    /// The whole web (or a recent slice of it), newest thoughts first.
+    public func thoughts(limit: Int = 120) throws -> [Thought] {
+        try db.query("SELECT * FROM thoughts ORDER BY created_at DESC LIMIT ?", [.int(Int64(limit))]).map(decodeThought)
+    }
+
+    public func thoughtEdges(limit: Int = 200) throws -> [ThoughtEdge] {
+        try db.query("SELECT * FROM thought_edges ORDER BY created_at DESC LIMIT ?", [.int(Int64(limit))]).map { row in
+            ThoughtEdge(
+                id: UUID(uuidString: row.required("id"))!,
+                sessionID: UUID(uuidString: row.required("session_id"))!,
+                fromThoughtID: UUID(uuidString: row.required("from_thought_id"))!,
+                toThoughtID: UUID(uuidString: row.required("to_thought_id"))!,
+                type: ThoughtEdgeType(rawValue: row.required("type")) ?? .extends,
+                rationale: row.required("rationale"),
+                strength: row.double("strength"),
+                createdAt: Date(timeIntervalSince1970: row.double("created_at"))
+            )
+        }
+    }
+
+    public func thoughtCount() throws -> Int {
+        Int(try db.query("SELECT COUNT(*) AS n FROM thoughts").first?.int("n") ?? 0)
+    }
+
+    public func thoughtEdgeCount() throws -> Int {
+        Int(try db.query("SELECT COUNT(*) AS n FROM thought_edges").first?.int("n") ?? 0)
+    }
+
+    /// Wipe the mind's memory (sessions + web) without touching ideas — for a clean reset.
+    public func clearMind() throws {
+        try db.transaction {
+            try db.execute("DELETE FROM thought_edges")
+            try db.execute("DELETE FROM thoughts")
+            try db.execute("DELETE FROM thinking_sessions")
+        }
+    }
+
+    private func decodeThought(_ row: [String: String?]) -> Thought {
+        Thought(
+            id: UUID(uuidString: row.required("id"))!,
+            sessionID: UUID(uuidString: row.required("session_id"))!,
+            kind: ThoughtKind(rawValue: row.required("kind")) ?? .observation,
+            content: row.required("content"),
+            rationale: row.required("rationale"),
+            confidence: row.double("confidence"),
+            relatedIdeaIDs: ((try? JSONSupport.decode([String].self, from: row["related_idea_ids"] ?? nil)) ?? []).compactMap(UUID.init(uuidString:)),
+            createdAt: Date(timeIntervalSince1970: row.double("created_at")),
+            derivedFromNeverSend: (row["derived_from_never_send"] ?? nil).map { Int($0) == 1 } ?? false
+        )
     }
 
     public func buildOutcomes() throws -> [BuildOutcome] {
