@@ -379,6 +379,26 @@ struct ShellViewModelTests {
         #expect(model.tasteModel.isEmpty)
     }
 
+    @Test func recordingOutcomesRefitsRipenessCalibration() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        for index in 0..<4 {
+            model.addIdea(title: "Idea \(index)", body: "Body text for idea \(index) with enough content to score.", tags: "theme\(index)")
+        }
+        model.runLocalFermentation() // each idea now has a stored ripeness score
+
+        let ideas = model.ideas
+        for (index, idea) in ideas.enumerated() {
+            model.startBuildOutcome(for: idea)
+            model.outcomeDraft.result = index < 2 ? .shipped : .flopped
+            model.saveBuildOutcomeDraft()
+        }
+
+        // Two wins + two flops, each with a ripeness score, is a full fit.
+        #expect(model.ripenessCalibration.observations == 4)
+        #expect(try store.loadRipenessCalibration().observations == 4)
+    }
+
     @Test func portfolioReasoningGuidesWhenThereAreNoIdeas() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store, keyLookup: { _ in nil })

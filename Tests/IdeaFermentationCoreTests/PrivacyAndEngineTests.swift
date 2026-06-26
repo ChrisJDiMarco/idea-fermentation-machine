@@ -144,8 +144,9 @@ struct PrivacyAndEngineTests {
         // The echoed output IS the exact payload sent to the provider.
         let sent = try #require(store.runLogs().first?.output)
         #expect(!sent.contains("TOP-SECRET-PLAINTEXT-BODY"))
-        #expect(sent.contains("Vault"))
-        #expect(sent.contains("never-send"))
+        // The title is withheld too — a never-send source's title can itself be sensitive.
+        #expect(!sent.contains("Vault"))
+        #expect(sent.contains("content withheld"))
     }
 
     @Test func cloudDigestRedactsNeverSendSourcedIdeaBodies() async throws {

@@ -214,6 +214,7 @@ public final class ShellViewModel: ObservableObject {
     @Published var buildOutcomes: [BuildOutcome] = []
     @Published var portfolioReport: PortfolioReport?
     @Published var tasteProfile: TasteProfile?
+    @Published var ripenessCalibration = RipenessCalibration()
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -289,6 +290,7 @@ public final class ShellViewModel: ObservableObject {
             buildOutcomes = try store.buildOutcomes()
             portfolioReport = try store.loadPortfolioReport()
             tasteProfile = try store.loadTasteProfile()
+            ripenessCalibration = try store.loadRipenessCalibration()
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {
@@ -1678,7 +1680,35 @@ public final class ShellViewModel: ObservableObject {
     /// A fermentation engine wired with the operator's taste profile (so local
     /// scoring reflects what they actually care about) and key-aware routing.
     private func makeEngine() -> FermentationEngine {
-        FermentationEngine(store: store, router: makeRouter(), taste: TasteSignals(profile: autonomyProfile, learned: tasteModel))
+        FermentationEngine(store: store, router: makeRouter(), taste: TasteSignals(profile: autonomyProfile, learned: tasteModel), calibration: ripenessCalibration)
+    }
+
+    /// Refit the ripeness re-weighting from build outcomes: each outcome pairs the
+    /// idea's axis scores with whether the build went well. Cheap, local, deterministic.
+    private func recalibrateRipeness() {
+        do {
+            let outcomes = try store.buildOutcomes()
+            let samples: [RipenessCalibration.Sample] = outcomes.compactMap { outcome in
+                // Use the score as it stood AT outcome time, never a post-outcome re-score
+                // (which could be contaminated by the outcome itself). No build-time score
+                // ⇒ no sample, rather than learning from a fabricated one.
+                let scores = (try? store.ripenessScores(for: outcome.ideaID)) ?? []
+                guard let score = scores
+                    .filter({ $0.createdAt <= outcome.createdAt })
+                    .max(by: { $0.createdAt < $1.createdAt })
+                else { return nil }
+                return RipenessCalibration.Sample(
+                    novelty: score.novelty, clarity: score.clarity, evidence: score.evidence,
+                    resonance: score.personalResonance, feasibility: score.feasibility, timing: score.timing,
+                    positive: outcome.result.isPositive
+                )
+            }
+            let calibration = RipenessCalibration.fit(samples: samples)
+            try store.saveRipenessCalibration(calibration)
+            ripenessCalibration = calibration
+        } catch {
+            errorMessage = error.localizedDescription
+        }
     }
 
     // MARK: Learning loop (Phase 6)
@@ -1736,6 +1766,9 @@ public final class ShellViewModel: ObservableObject {
             // A recorded outcome is an endpoint: the idea composts into the Archive,
             // now carrying its real result and lesson instead of a heuristic guess.
             updateIdea(idea) { $0.status = .archived }
+            // Every outcome is a labeled example — refit which ripeness axes actually
+            // predict this operator's wins.
+            recalibrateRipeness()
             activeSheet = nil
             selectedPage = .archive
             errorMessage = "Recorded outcome for \(idea.title): \(result.title)."

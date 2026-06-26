@@ -1048,6 +1048,15 @@ public final class IdeaStore {
         try saveSetting("taste_profile_v1", nil as TasteProfile?)
     }
 
+    /// The learned ripeness re-weighting, fit from build outcomes.
+    public func loadRipenessCalibration() throws -> RipenessCalibration {
+        try loadSetting("ripeness_calibration_v1", defaultValue: RipenessCalibration())
+    }
+
+    public func saveRipenessCalibration(_ calibration: RipenessCalibration) throws {
+        try saveSetting("ripeness_calibration_v1", calibration)
+    }
+
     private func loadSetting<T: Codable>(_ key: String, defaultValue: T) throws -> T {
         guard let row = try db.query("SELECT value FROM app_settings WHERE key = ?", [.text(key)]).first else {
             return defaultValue

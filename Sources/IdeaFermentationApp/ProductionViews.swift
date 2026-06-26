@@ -410,6 +410,8 @@ struct AutonomyPage: View {
 
                 LearnedTasteCard(model: model)
 
+                RipenessCalibrationCard(model: model)
+
                 ScoutFocusCard(model: model)
 
                 IFMCard {
@@ -664,6 +666,75 @@ struct LearnedTasteCard: View {
                 }
             }
             .scrollIndicators(.never)
+        }
+    }
+}
+
+struct RipenessCalibrationCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    private static let axisLabels: [String: String] = [
+        "novelty": "Novelty", "clarity": "Clarity", "evidence": "Evidence",
+        "resonance": "Taste fit", "feasibility": "Feasibility", "timing": "Timing"
+    ]
+
+    var body: some View {
+        let calibration = model.ripenessCalibration
+        return IFMCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("What Predicts Your Wins").font(.headline)
+                        Text("Calibrates ripeness from real build outcomes — the axes that separated what you shipped from what flopped count for more.")
+                            .font(.caption)
+                            .foregroundStyle(IFMTheme.muted)
+                    }
+                    Spacer()
+                    Image(systemName: "scalemass").foregroundStyle(IFMTheme.orange)
+                }
+
+                if !calibration.isCalibrated {
+                    Text(calibration.observations > 0
+                         ? "Recorded \(calibration.observations) outcome\(calibration.observations == 1 ? "" : "s") so far. Once you've built a few that went well and a few that didn't, ripeness re-weights toward what actually predicts your wins."
+                         : "No outcomes yet. Record what happened when you build (Shipped / Built / Abandoned / Flopped) and ripeness starts learning which signals matter for you.")
+                        .font(.caption)
+                        .foregroundStyle(IFMTheme.muted)
+                        .padding(.vertical, 2)
+                } else {
+                    ForEach(calibration.drivers(), id: \.axis) { driver in
+                        driverRow(label: Self.axisLabels[driver.axis] ?? driver.axis.capitalized, weight: driver.weight)
+                    }
+                    Text("Fit from \(calibration.observations) build outcome\(calibration.observations == 1 ? "" : "s"). 1.0× = the old equal weighting.")
+                        .font(.caption2)
+                        .foregroundStyle(IFMTheme.muted)
+                        .padding(.top, 2)
+                }
+            }
+        }
+    }
+
+    private func driverRow(label: String, weight: Double) -> some View {
+        let emphasized = weight >= 1.05
+        let muted = weight <= 0.95
+        let color = emphasized ? IFMTheme.green : (muted ? IFMTheme.slate : IFMTheme.muted)
+        return HStack(spacing: 10) {
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .frame(width: 86, alignment: .leading)
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(IFMTheme.scrim.opacity(0.08)).frame(height: 7)
+                    // Bar centered on the 1.0× midpoint: longer = more predictive.
+                    Capsule().fill(color)
+                        .frame(width: max(4, proxy.size.width * CGFloat(min(2.0, weight) / 2.0)), height: 7)
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
+            }
+            .frame(height: 14)
+            Text(String(format: "%.1f×", weight))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(color)
+                .frame(width: 38, alignment: .trailing)
         }
     }
 }

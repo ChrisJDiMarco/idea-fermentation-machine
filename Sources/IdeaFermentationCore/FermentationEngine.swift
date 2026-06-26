@@ -22,17 +22,20 @@ public final class FermentationEngine {
     private let promptFactory: AgentPromptFactory
     private let router: ModelRouter
     private let taste: TasteSignals
+    private let calibration: RipenessCalibration
 
     public init(
         store: IdeaStore,
         promptFactory: AgentPromptFactory = AgentPromptFactory(),
         router: ModelRouter = ModelRouter(),
-        taste: TasteSignals = TasteSignals()
+        taste: TasteSignals = TasteSignals(),
+        calibration: RipenessCalibration = RipenessCalibration()
     ) {
         self.store = store
         self.promptFactory = promptFactory
         self.router = router
         self.taste = taste
+        self.calibration = calibration
     }
 
     @discardableResult
@@ -211,11 +214,12 @@ public final class FermentationEngine {
             base = PrivacyPolicy.preview(idea: idea, sources: sources, taskClass: job.taskClass).payload
         } else if let sourceID = job.sourceID {
             let source = try store.source(id: sourceID)
-            // A source flagged never-send must not have its body leave the machine,
-            // even on a cloud-routed source job. Send the title plus a redaction
-            // marker so the run can proceed without exposing protected content.
+            // A source flagged never-send must not have ANY of its content leave the
+            // machine on a cloud-routed source job — not the body and not the title,
+            // since a title alone can be sensitive ("Acme Q3 layoff plan — J. Doe").
+            // Send a fully generic placeholder so the run can proceed.
             base = source.neverSendToCloud
-                ? "\(source.title)\n[Content withheld — this source is marked never-send.]"
+                ? "[Private source — content withheld]"
                 : "\(source.title)\n\(source.body)"
         } else {
             base = job.inputHash
@@ -362,7 +366,7 @@ public final class FermentationEngine {
         idea.personalResonance = result.personalResonance
         idea.feasibility = result.feasibility
         idea.timing = result.timing
-        idea.ripeness = min(100, result.average)
+        idea.ripeness = calibration.ripeness(novelty: result.novelty, clarity: result.clarity, evidence: result.evidence, resonance: result.personalResonance, feasibility: result.feasibility, timing: result.timing)
         idea.updatedAt = Date()
         if idea.ripeness >= 78 {
             idea.status = .ready
@@ -464,9 +468,10 @@ public final class FermentationEngine {
         next.evidence = evidence
         next.timing = timing
         next.personalResonance = resonance
-        // Ripeness is the mean of all six axes, identical to `RipenessResult.average`
-        // and the cloud scoring path, so local and cloud promotion decisions agree.
-        next.ripeness = min(100, (novelty + clarity + evidence + resonance + feasibility + timing) / 6)
+        // Ripeness is a weighted blend of all six axes — equal weights by default
+        // (identical to the old mean and the cloud path), re-weighted toward the axes
+        // that have actually predicted this operator's build wins once outcomes exist.
+        next.ripeness = calibration.ripeness(novelty: novelty, clarity: clarity, evidence: evidence, resonance: resonance, feasibility: feasibility, timing: timing)
         next.updatedAt = Date()
 
         if next.ripeness >= 78 {
