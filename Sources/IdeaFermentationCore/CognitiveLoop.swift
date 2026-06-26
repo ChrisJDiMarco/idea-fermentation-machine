@@ -115,6 +115,206 @@ public enum CognitiveLoop {
         return CognitiveResult(session: session, thoughts: thoughts, edges: edges, generated: generated, responses: responses)
     }
 
+    // MARK: - Discovery cycle (cold-start: a space in, VC-grade theses out)
+
+    /// Hand the mind a *space* instead of an idea and it acts as researcher + VC: maps the space,
+    /// generates original theses, evaluates each like a seed investor, and critiques its own
+    /// discovery. Works from an empty corpus. Cloud-only — this is generative research with no
+    /// meaningful offline equivalent. Like `think`, only the first (mapping) call is load-bearing;
+    /// later stages degrade gracefully and every paid response is returned.
+    public static func discover(
+        vertical: String,
+        contextIdeas: [IdeaSeed],
+        signals: [ScoutSignal],
+        taste: TasteProfile?,
+        builderProfile: AutonomyProfile?,
+        provider: any LLMProvider,
+        model: LLMModel,
+        apiKey: String,
+        now: Date = Date()
+    ) async throws -> DiscoveryOutcome {
+        let sessionID = UUID()
+        let builder = BuilderContext.promptPrefix(profile: builderProfile, taste: taste)
+        var responses: [LLMResponse] = []
+
+        // Stage 1 — Map the space (the researcher). Load-bearing.
+        let mapRequest = LLMRequest(
+            taskClass: .prototypeBrief,
+            prompt: builder + mapInstruction,
+            input: discoveryInput(vertical: vertical, signals: signals, contextIdeas: contextIdeas),
+            maxOutputTokens: 1_000
+        )
+        let mapResponse = try await provider.send(mapRequest, model: model, apiKey: apiKey)
+        responses.append(mapResponse)
+        guard let map = decode(SpaceMap.self, from: mapResponse.text) else {
+            return DiscoveryOutcome(result: nil, theses: [], responses: responses)
+        }
+
+        // Stage 2 — Generate theses (the founder). Best-effort.
+        var theses: [DiscoveredThesis] = []
+        let genRequest = LLMRequest(
+            taskClass: .prototypeBrief,
+            prompt: builder + thesisInstruction,
+            input: "SPACE: \(vertical)\n\n\(mapSummary(map))",
+            maxOutputTokens: 1_000
+        )
+        if let genResponse = try? await provider.send(genRequest, model: model, apiKey: apiKey) {
+            responses.append(genResponse)
+            if let drafts = decode(ThesisDrafts.self, from: genResponse.text) {
+                theses = drafts.theses.prefix(4).map {
+                    DiscoveredThesis(title: $0.title, thesis: $0.thesis, tags: $0.tags ?? [])
+                }
+            }
+        }
+
+        // Stage 3 — VC evaluation (the investor). Best-effort; merges by order.
+        if !theses.isEmpty {
+            let vcRequest = LLMRequest(
+                taskClass: .critique,
+                prompt: vcInstruction,
+                input: "THESES:\n" + theses.enumerated().map { "\($0.offset + 1). \($0.element.title): \($0.element.thesis)" }.joined(separator: "\n"),
+                maxOutputTokens: 1_000
+            )
+            if let vcResponse = try? await provider.send(vcRequest, model: model, apiKey: apiKey) {
+                responses.append(vcResponse)
+                if let evals = decode(VCEvaluations.self, from: vcResponse.text) {
+                    // Align each evaluation to its thesis BY TITLE when the model echoed it (it is
+                    // asked to), so a reordered or dropped evaluation can't graft the wrong VC read
+                    // onto a thesis. Fall back to position only when a title is missing/unmatched.
+                    var byTitle: [String: Int] = [:]
+                    for (i, thesis) in theses.enumerated() {
+                        byTitle[normalizedKey(thesis.title)] = i
+                    }
+                    for (position, eval) in evals.evaluations.enumerated() {
+                        let target = byTitle[normalizedKey(eval.title ?? "")] ?? (position < theses.count ? position : nil)
+                        guard let i = target else { continue }
+                        if let value = eval.whyNow { theses[i].whyNow = value }
+                        if let value = eval.wedge { theses[i].wedge = value }
+                        if let value = eval.moat { theses[i].moat = value }
+                        if let value = eval.riskiestAssumption { theses[i].riskiestAssumption = value }
+                        if let value = eval.conviction { theses[i].conviction = min(1, max(0, value)) }
+                    }
+                }
+            }
+            theses.sort { $0.conviction > $1.conviction }
+        }
+
+        // Stage 4 — Reflect on the discovery (metacognition + curiosity).
+        var reflection = MindReflection()
+        let reflectRequest = LLMRequest(
+            taskClass: .critique,
+            prompt: discoveryReflectInstruction,
+            input: "SPACE: \(vertical)\n\n\(mapSummary(map))\n\nTHESES:\n" + theses.map { "- \($0.title) (conviction \(Int($0.conviction * 100))%)" }.joined(separator: "\n"),
+            maxOutputTokens: 500
+        )
+        if let reflectResponse = try? await provider.send(reflectRequest, model: model, apiKey: apiKey) {
+            responses.append(reflectResponse)
+            if let decoded = decode(ReflectionOutput.self, from: reflectResponse.text) { reflection = decoded.asReflection }
+        }
+
+        let (thoughts, edges) = assembleDiscovery(vertical: vertical, map: map, theses: theses, sessionID: sessionID, confidence: reflection.isEmpty ? 0.55 : reflection.confidence, now: now)
+        let generated = theses.map { ExtractedSeed(title: $0.title, body: $0.ideaBody, tags: $0.tags) }
+        let session = ThinkingSession(
+            id: sessionID, focus: "Exploring: \(vertical)", startedAt: now,
+            analysis: map.summary, reflection: reflection,
+            thoughtIDs: thoughts.map(\.id), edgeIDs: edges.map(\.id), generatedIdeaIDs: [],
+            costUSD: 0, source: "discovered · \(provider.providerName)", derivedFromNeverSend: false
+        )
+        let result = CognitiveResult(session: session, thoughts: thoughts, edges: edges, generated: generated, responses: responses)
+        return DiscoveryOutcome(result: result, theses: theses, responses: responses)
+    }
+
+    /// A star-shaped web: the space at the centre, each thesis a hypothesis derived from it, plus
+    /// the white-space gaps as open questions.
+    private static func assembleDiscovery(vertical: String, map: SpaceMap, theses: [DiscoveredThesis], sessionID: UUID, confidence: Double, now: Date) -> (thoughts: [Thought], edges: [ThoughtEdge]) {
+        let space = Thought(sessionID: sessionID, kind: .observation, content: "The \(vertical) space", rationale: String(map.summary.prefix(200)), confidence: confidence, createdAt: now)
+        var thoughts: [Thought] = [space]
+        var edges: [ThoughtEdge] = []
+        for thesis in theses.prefix(maxNodes) {
+            let node = Thought(sessionID: sessionID, kind: .hypothesis, content: thesis.title, rationale: String(thesis.thesis.prefix(160)), confidence: thesis.conviction, createdAt: now)
+            thoughts.append(node)
+            edges.append(ThoughtEdge(sessionID: sessionID, fromThoughtID: node.id, toThoughtID: space.id, type: .derivesFrom, rationale: "A bet in this space", strength: thesis.conviction, createdAt: now))
+        }
+        for gap in map.whiteSpace.prefix(3) {
+            thoughts.append(Thought(sessionID: sessionID, kind: .question, content: gap, confidence: confidence, createdAt: now))
+        }
+        return (thoughts, edges)
+    }
+
+    private static func discoveryInput(vertical: String, signals: [ScoutSignal], contextIdeas: [IdeaSeed]) -> String {
+        var parts = ["SPACE TO EXPLORE: \(vertical)"]
+        if !signals.isEmpty {
+            parts.append("FRESH SIGNALS FROM THE WEB:\n" + signals.prefix(6).map { "- \($0.title): \($0.summary.prefix(160))" }.joined(separator: "\n"))
+        }
+        if !contextIdeas.isEmpty {
+            parts.append("IDEAS THE BUILDER ALREADY HAS NEAR THIS SPACE:\n" + contextIdeas.prefix(6).map { "- \($0.title)" }.joined(separator: "\n"))
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    /// Normalised title key for aligning VC evaluations to theses.
+    private static func normalizedKey(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private static func mapSummary(_ map: SpaceMap) -> String {
+        var parts = ["MAP: \(map.summary)"]
+        if !map.forces.isEmpty { parts.append("WHY-NOW FORCES:\n" + map.forces.map { "- \($0)" }.joined(separator: "\n")) }
+        if !map.whiteSpace.isEmpty { parts.append("WHITE SPACE (gaps):\n" + map.whiteSpace.map { "- \($0)" }.joined(separator: "\n")) }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private static let mapInstruction = """
+    You are a sharp researcher mapping a market/space for a solo builder hunting a non-obvious idea \
+    to build. Map the space concretely: the forces genuinely changing it RIGHT NOW (why-now), where \
+    energy, capital and attention are moving, and — most important — the WHITE SPACE: unmet needs and \
+    non-obvious gaps a small team could wedge into. Specific and current, never generic.
+    Return ONLY JSON:
+    {"summary":"2-4 sentences on the state of this space","forces":["why-now forces (max 5)"],"whiteSpace":["unmet needs / gaps (max 5)"],"observations":["other concrete things worth noting (max 4)"]}
+    """
+
+    private static let thesisInstruction = """
+    From this map of the space, propose THREE original, non-obvious, fundable idea theses — each a \
+    real bet a solo builder could START, not a summary of the space, and NOT the obvious first idea \
+    anyone would name. Fit the builder if a taste is given.
+    Return ONLY JSON:
+    {"theses":[{"title":"<=70 chars","thesis":"the bet: what it is, why it's non-obvious, and the single smallest test that would prove it","tags":["3-5 lowercase themes"]}]}
+    """
+
+    private static let vcInstruction = """
+    You are a top-tier seed-stage VC. Evaluate EACH thesis with intellectual honesty (low conviction \
+    is fine). For each give: whyNow (the timing thesis — what changed that makes this possible now), \
+    wedge (the smallest beachhead to enter), moat (why it compounds / gets harder to copy over time), \
+    riskiestAssumption (the one thing that would kill it), and conviction (0.0-1.0 — how fundable and \
+    worth building right now). Keep the SAME order as the theses given.
+    Return ONLY JSON:
+    {"evaluations":[{"title":"...","whyNow":"...","wedge":"...","moat":"...","riskiestAssumption":"...","conviction":0.0-1.0}]}
+    """
+
+    private static let discoveryReflectInstruction = """
+    You are the mind reflecting on the discovery you just did. Critique your PROCESS, not the theses: \
+    was the space genuinely rich or did you force theses, the assumptions your mapping rested on, the \
+    riskiest leap in your reasoning, a calibrated confidence, and — your curiosity — the single most \
+    promising ADJACENT space worth exploring next.
+    Return ONLY JSON:
+    {"weakestLink":"...","assumptions":["..."],"spuriousConnections":["..."],"processNote":"...","confidence":0.0-1.0,"nextToExplore":"the adjacent space worth exploring next"}
+    """
+
+    private struct SpaceMap: Codable {
+        var summary: String = ""
+        var forces: [String] = []
+        var whiteSpace: [String] = []
+        var observations: [String] = []
+    }
+    private struct ThesisDrafts: Codable {
+        struct Draft: Codable { var title: String; var thesis: String; var tags: [String]? }
+        var theses: [Draft] = []
+    }
+    private struct VCEvaluations: Codable {
+        struct Eval: Codable { var title: String?; var whyNow: String?; var wedge: String?; var moat: String?; var riskiestAssumption: String?; var conviction: Double? }
+        var evaluations: [Eval] = []
+    }
+
     // MARK: - Local cycle (offline, degraded but real)
 
     /// A real cognitive pass with no model: find the strongest links among the ideas via

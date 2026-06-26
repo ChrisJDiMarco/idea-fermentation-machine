@@ -355,11 +355,12 @@ struct BrowserConnectorCard: View {
 
 /// The Mind's internal sections — a small, friendly tab set instead of one long scroll.
 enum MindSection: String, CaseIterable, Identifiable {
-    case overview, web, history, tuning, settings
+    case overview, discover, web, history, tuning, settings
     var id: String { rawValue }
     var title: String {
         switch self {
         case .overview: return "Overview"
+        case .discover: return "Discover"
         case .web: return "The Web"
         case .history: return "History"
         case .tuning: return "Tuning"
@@ -369,6 +370,7 @@ enum MindSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .overview: return "sparkles"
+        case .discover: return "sparkle.magnifyingglass"
         case .web: return "point.3.connected.trianglepath.dotted"
         case .history: return "clock.arrow.circlepath"
         case .tuning: return "slider.horizontal.3"
@@ -388,6 +390,7 @@ struct AutonomyPage: View {
                 Group {
                     switch section {
                     case .overview: MindOverview(model: model, go: { section = $0 })
+                    case .discover: MindDiscoverSection(model: model)
                     case .web: MindWebSection(model: model)
                     case .history: MindHistory(model: model)
                     case .tuning: MindTuning(model: model)
@@ -473,8 +476,32 @@ struct MindOverview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: IFMSpacing.lg) {
             AutomationHeroCard(model: model)
+            if model.latestThinkingSession == nil {
+                DiscoverNudgeCard(onDiscover: { go(.discover) })
+            }
             MindLatestThoughtCard(model: model, onSeeAll: { go(.history) })
             MindWebPeekCard(model: model, onExplore: { go(.web) })
+        }
+    }
+}
+
+/// A friendly prompt that points a brand-new user (no thinking yet) at Discovery.
+struct DiscoverNudgeCard: View {
+    var onDiscover: () -> Void
+    var body: some View {
+        IFMCard {
+            HStack(spacing: IFMSpacing.md) {
+                SymbolBadge(symbol: "sparkle.magnifyingglass", color: IFMTheme.purple, size: 40)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Don't have an idea yet?").font(.system(size: 14, weight: .semibold))
+                    Text("Name a space you're curious about and the mind will research it and propose ideas — like a founder and a VC.")
+                        .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                Button(action: onDiscover) { Label("Discover", systemImage: "arrow.right") }
+                    .buttonStyle(.borderedProminent).tint(IFMTheme.purple)
+            }
         }
     }
 }
@@ -585,6 +612,126 @@ struct MindWebSection: View {
             SectionHeader("The thought-web", subtitle: "Its latest cycle as nodes and typed connections — the web grows every time it thinks.", symbol: "point.3.connected.trianglepath.dotted", accent: IFMTheme.blue)
                 .padding(.horizontal, 2)
             ThoughtWebCard(model: model)
+        }
+    }
+}
+
+// MARK: - Discover tab (cold-start: name a space, get VC-grade theses)
+
+struct MindDiscoverSection: View {
+    @ObservedObject var model: ShellViewModel
+    private let examples = ["AI agents for ops teams", "tools for solo founders", "voice AI for eldercare", "climate × fintech", "dev tools for AI apps"]
+
+    private var canRun: Bool {
+        !model.isDiscovering && !model.isThinking && !model.isRunningScout && !model.isRunningJob
+            && !model.discoveryVertical.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.lg) {
+            SectionHeader("Discover ideas in a space", subtitle: "No idea yet? Name a space you're curious about — the mind researches it like a founder and a VC, even from an empty list.", symbol: "sparkle.magnifyingglass", accent: IFMTheme.purple)
+                .padding(.horizontal, 2)
+
+            IFMCard {
+                VStack(alignment: .leading, spacing: IFMSpacing.md) {
+                    HStack(spacing: IFMSpacing.sm) {
+                        TextField("e.g. voice AI for eldercare", text: $model.discoveryVertical)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { if canRun { Task { await model.discover(vertical: model.discoveryVertical) } } }
+                        Button {
+                            Task { await model.discover(vertical: model.discoveryVertical) }
+                        } label: {
+                            HStack(spacing: 6) {
+                                if model.isDiscovering { ProgressView().controlSize(.small) }
+                                else { Image(systemName: "sparkles") }
+                                Text(model.isDiscovering ? "Researching…" : "Find Ideas")
+                            }
+                            .frame(height: 22)
+                        }
+                        .buttonStyle(.borderedProminent).tint(IFMTheme.purple)
+                        .disabled(!canRun)
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(examples, id: \.self) { example in
+                                Button { model.discoveryVertical = example } label: {
+                                    Text(example).font(.system(size: 11, weight: .medium))
+                                        .padding(.horizontal, 10).padding(.vertical, 5)
+                                        .background(IFMTheme.purple.opacity(0.1))
+                                        .foregroundStyle(IFMTheme.purple)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 1)
+                    }
+                    Text("Uses live web research when it's enabled (Tuning → Privacy), otherwise reasons from what it knows. A few cents per run, within your caps.")
+                        .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if model.isDiscovering {
+                IFMCard {
+                    HStack(spacing: IFMSpacing.sm) {
+                        ProgressView().controlSize(.small)
+                        Text("Mapping the space, generating theses, and judging them like a VC…")
+                            .font(.ifmBody).foregroundStyle(IFMTheme.muted)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if !model.discoveryResults.isEmpty {
+                SectionHeader("What it found", subtitle: "Ranked by the VC's conviction — all saved to your Inbox.", symbol: "lightbulb.fill", accent: IFMTheme.green)
+                    .padding(.horizontal, 2)
+                ForEach(model.discoveryResults) { ThesisCard(thesis: $0) }
+            }
+        }
+    }
+}
+
+/// One discovered idea as a VC would frame it: the bet, then why-now / wedge / moat / risk, with a
+/// conviction read.
+struct ThesisCard: View {
+    let thesis: DiscoveredThesis
+
+    private var convictionColor: Color {
+        if thesis.conviction >= 0.66 { return IFMTheme.green }
+        if thesis.conviction >= 0.4 { return IFMTheme.orange }
+        return IFMTheme.slate
+    }
+
+    var body: some View {
+        SectionCard(thesis.title, symbol: "lightbulb.fill", accent: convictionColor, trailing: {
+            HStack(spacing: 5) {
+                ConfidenceGauge(value: thesis.conviction)
+            }
+        }) {
+            VStack(alignment: .leading, spacing: IFMSpacing.md) {
+                Text(thesis.thesis).font(.ifmBody).foregroundStyle(IFMTheme.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                if !thesis.whyNow.isEmpty { vcLine("Why now", thesis.whyNow, "bolt.fill", IFMTheme.orange) }
+                if !thesis.wedge.isEmpty { vcLine("Wedge", thesis.wedge, "arrow.down.right.circle", IFMTheme.blue) }
+                if !thesis.moat.isEmpty { vcLine("Moat", thesis.moat, "shield.lefthalf.filled", IFMTheme.green) }
+                if !thesis.riskiestAssumption.isEmpty { vcLine("Riskiest assumption", thesis.riskiestAssumption, "exclamationmark.triangle.fill", IFMTheme.red) }
+                HStack(spacing: 6) {
+                    ForEach(thesis.tags.prefix(4), id: \.self) { Pill(text: $0, color: IFMTheme.slate) }
+                    Spacer()
+                    Label("Saved to Inbox", systemImage: "tray.and.arrow.down.fill")
+                        .font(.system(size: 10, weight: .semibold)).foregroundStyle(IFMTheme.green)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func vcLine(_ label: String, _ value: String, _ symbol: String, _ color: Color) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(color).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.system(size: 10, weight: .heavy)).foregroundStyle(IFMTheme.muted)
+                Text(value).font(.ifmCaption).foregroundStyle(IFMTheme.text).fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 }

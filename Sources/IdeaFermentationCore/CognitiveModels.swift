@@ -212,6 +212,63 @@ public struct ThinkingSession: Identifiable, Codable, Equatable, Sendable {
     public var isCloud: Bool { source.hasPrefix("cloud") }
 }
 
+/// A VC-grade idea thesis the mind discovers when handed a *space* rather than an idea. This is
+/// the "researcher + VC" output: not just an idea, but the bet, why it's timely, how to enter, why
+/// it would compound, what would kill it, and how much conviction it carries.
+public struct DiscoveredThesis: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var title: String
+    /// The core bet — what it is and why it's non-obvious.
+    public var thesis: String
+    /// The timing thesis — what changed that makes this possible *now*.
+    public var whyNow: String
+    /// The smallest beachhead to enter the market.
+    public var wedge: String
+    /// Why it compounds / gets harder to copy over time.
+    public var moat: String
+    /// The single assumption that would kill it if false.
+    public var riskiestAssumption: String
+    /// 0…1 — how fundable / worth building right now, the VC's honest read.
+    public var conviction: Double
+    public var tags: [String]
+
+    public init(id: UUID = UUID(), title: String, thesis: String, whyNow: String = "", wedge: String = "", moat: String = "", riskiestAssumption: String = "", conviction: Double = 0.5, tags: [String] = []) {
+        self.id = id
+        self.title = title
+        self.thesis = thesis
+        self.whyNow = whyNow
+        self.wedge = wedge
+        self.moat = moat
+        self.riskiestAssumption = riskiestAssumption
+        self.conviction = min(1, max(0, conviction))
+        self.tags = tags
+    }
+
+    /// The full thesis as an idea body for the inbox — the bet plus the VC read.
+    public var ideaBody: String {
+        var lines = [thesis]
+        if !whyNow.isEmpty { lines.append("\n**Why now:** \(whyNow)") }
+        if !wedge.isEmpty { lines.append("**Wedge:** \(wedge)") }
+        if !moat.isEmpty { lines.append("**Moat:** \(moat)") }
+        if !riskiestAssumption.isEmpty { lines.append("**Riskiest assumption:** \(riskiestAssumption)") }
+        return lines.joined(separator: "\n")
+    }
+}
+
+/// What a discovery run returns: the persistable cognitive result (the space map + theses as a
+/// web), the structured theses for the Discover UI, and every response paid for.
+public struct DiscoveryOutcome: Sendable {
+    public var result: CognitiveResult?
+    public var theses: [DiscoveredThesis]
+    public var responses: [LLMResponse]
+
+    public init(result: CognitiveResult?, theses: [DiscoveredThesis], responses: [LLMResponse]) {
+        self.result = result
+        self.theses = theses
+        self.responses = responses
+    }
+}
+
 /// What the engine returns from one cycle — assembled here, persisted by the store, and (for
 /// generated ideas) admitted into the inbox by the view model. Generated ideas are `ExtractedSeed`
 /// (the same shape the scout produces) so the downstream save path is shared.

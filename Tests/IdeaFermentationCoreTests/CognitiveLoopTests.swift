@@ -104,6 +104,107 @@ struct CognitiveLoopTests {
     }
 }
 
+/// Returns a distinct structured reply for each of discovery's four stages.
+struct DiscoveryStubProvider: LLMProvider {
+    let providerName = "Stub"
+    let availableModels = [
+        LLMModel(provider: "Stub", name: "stub", displayName: "Stub", inputCostPerMillion: 0.1, outputCostPerMillion: 0.1, pricingURL: "local", verifiedOn: "test")
+    ]
+
+    func send(_ request: LLMRequest, model: LLMModel, apiKey: String) async throws -> LLMResponse {
+        let text: String
+        if request.prompt.contains("mapping a market/space") {
+            text = #"{"summary":"A space changing fast.","forces":["AI cost is collapsing"],"whiteSpace":["no tool for onboarding","reporting is manual"],"observations":["incumbents are slow"]}"#
+        } else if request.prompt.contains("propose THREE original") {
+            text = #"{"theses":[{"title":"Thesis A","thesis":"Bet A; smallest test is a landing page.","tags":["ai","ops"]},{"title":"Thesis B","thesis":"Bet B.","tags":["ops"]}]}"#
+        } else if request.prompt.contains("top-tier seed-stage VC") {
+            text = #"{"evaluations":[{"title":"Thesis A","whyNow":"now A","wedge":"wedge A","moat":"moat A","riskiestAssumption":"risk A","conviction":0.8},{"title":"Thesis B","whyNow":"now B","wedge":"wedge B","moat":"moat B","riskiestAssumption":"risk B","conviction":0.5}]}"#
+        } else {
+            text = #"{"weakestLink":"thin evidence","assumptions":["demand exists"],"spuriousConnections":[],"processNote":"explored adequately","confidence":0.7,"nextToExplore":"the adjacent space"}"#
+        }
+        return LLMResponse(text: text, inputTokens: 70, outputTokens: 70, provider: providerName, model: model.name)
+    }
+}
+
+@Suite("Discovery")
+struct DiscoveryTests {
+    @Test func discoversAndVCEvaluatesThesesFromAColdStart() async throws {
+        let provider = DiscoveryStubProvider()
+        // Empty corpus — cold start.
+        let outcome = try await CognitiveLoop.discover(
+            vertical: "AI agents for ops", contextIdeas: [], signals: [],
+            taste: nil, builderProfile: nil, provider: provider, model: provider.availableModels[0], apiKey: "k"
+        )
+
+        #expect(outcome.responses.count == 4) // map + generate + VC + reflect
+        #expect(outcome.theses.count == 2)
+        // Sorted by conviction, VC fields merged in.
+        #expect(outcome.theses.first?.title == "Thesis A")
+        #expect(outcome.theses.first?.conviction == 0.8)
+        #expect(outcome.theses.first?.whyNow == "now A")
+        #expect(outcome.theses.first?.moat == "moat A")
+        #expect(outcome.theses.last?.conviction == 0.5)
+        // The idea body carries the VC read.
+        #expect(outcome.theses.first?.ideaBody.contains("**Why now:** now A") == true)
+
+        let result = try #require(outcome.result)
+        #expect(result.session.focus == "Exploring: AI agents for ops")
+        #expect(result.session.source.hasPrefix("discovered"))
+        #expect(result.session.reflection.confidence == 0.7)
+        // Web: space anchor + 2 thesis hypotheses + 2 white-space questions.
+        #expect(result.thoughts.contains { $0.kind == .observation && $0.content == "The AI agents for ops space" })
+        #expect(result.thoughts.filter { $0.kind == .hypothesis }.count == 2)
+        #expect(result.thoughts.filter { $0.kind == .question }.count == 2)
+        // Each thesis derives from the space anchor.
+        #expect(result.edges.count == 2)
+        #expect(result.edges.allSatisfy { $0.type == .derivesFrom })
+        #expect(result.generated.count == 2)
+    }
+
+    @Test func vcEvaluationAlignsByTitleEvenWhenReordered() async throws {
+        // VC evaluations come back in REVERSE order — alignment must follow the title, not position.
+        struct ReorderedVCStub: LLMProvider {
+            let providerName = "Stub"
+            let availableModels = [LLMModel(provider: "Stub", name: "stub", displayName: "Stub", inputCostPerMillion: 0.1, outputCostPerMillion: 0.1, pricingURL: "local", verifiedOn: "test")]
+            func send(_ request: LLMRequest, model: LLMModel, apiKey: String) async throws -> LLMResponse {
+                let text: String
+                if request.prompt.contains("mapping a market/space") {
+                    text = #"{"summary":"x","forces":[],"whiteSpace":[],"observations":[]}"#
+                } else if request.prompt.contains("propose THREE original") {
+                    text = #"{"theses":[{"title":"Alpha","thesis":"bet alpha","tags":["a"]},{"title":"Beta","thesis":"bet beta","tags":["b"]}]}"#
+                } else if request.prompt.contains("top-tier seed-stage VC") {
+                    text = #"{"evaluations":[{"title":"Beta","whyNow":"now beta","wedge":"w","moat":"m","riskiestAssumption":"r","conviction":0.3},{"title":"Alpha","whyNow":"now alpha","wedge":"w","moat":"m","riskiestAssumption":"r","conviction":0.9}]}"#
+                } else {
+                    text = #"{"confidence":0.6}"#
+                }
+                return LLMResponse(text: text, inputTokens: 50, outputTokens: 50, provider: providerName, model: model.name)
+            }
+        }
+        let provider = ReorderedVCStub()
+        let outcome = try await CognitiveLoop.discover(vertical: "x", contextIdeas: [], signals: [], taste: nil, builderProfile: nil, provider: provider, model: provider.availableModels[0], apiKey: "k")
+        let alpha = try #require(outcome.theses.first { $0.title == "Alpha" })
+        let beta = try #require(outcome.theses.first { $0.title == "Beta" })
+        // Despite the reversed VC response, each thesis kept its OWN evaluation.
+        #expect(alpha.conviction == 0.9)
+        #expect(alpha.whyNow == "now alpha")
+        #expect(beta.conviction == 0.3)
+        #expect(beta.whyNow == "now beta")
+        // And sorting put the higher-conviction one first.
+        #expect(outcome.theses.first?.title == "Alpha")
+    }
+
+    @Test func degradedMappingSurfacesThePaidCallButNoTheses() async throws {
+        let provider = GarbageReasonProvider() // returns unparseable text for every call
+        let outcome = try await CognitiveLoop.discover(
+            vertical: "anything", contextIdeas: [], signals: [],
+            taste: nil, builderProfile: nil, provider: provider, model: provider.availableModels[0], apiKey: "k"
+        )
+        #expect(outcome.result == nil)
+        #expect(outcome.theses.isEmpty)
+        #expect(outcome.responses.count == 1) // the map call was paid for
+    }
+}
+
 @Suite("Thought web persistence")
 struct ThoughtWebPersistenceTests {
     @Test func sessionThoughtsAndEdgesRoundTrip() throws {

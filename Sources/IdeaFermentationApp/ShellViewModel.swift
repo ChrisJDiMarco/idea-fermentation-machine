@@ -235,6 +235,10 @@ public final class ShellViewModel: ObservableObject {
     @Published var thoughtCount = 0
     @Published var connectionCount = 0
     @Published var isThinking = false
+    // Discovery mode — name a space, get VC-grade theses (works from an empty corpus).
+    @Published var discoveryVertical = ""
+    @Published var isDiscovering = false
+    @Published var discoveryResults: [DiscoveredThesis] = []
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -468,7 +472,7 @@ public final class ShellViewModel: ObservableObject {
     /// When the cloud can't run (no key, cap reached, or never-send material) it
     /// falls back to the local pass so there is always an instant result.
     private func runIdeaAgentNow(for idea: IdeaSeed, taskClass: ModelTaskClass, label: String) {
-        guard !isRunningJob else {
+        guard !isRunningJob, !isDiscovering else {
             errorMessage = "Another AI run is finishing — try again in a moment."
             return
         }
@@ -620,7 +624,7 @@ public final class ShellViewModel: ObservableObject {
     /// deterministic local report as the fallback. Same caps / reservation / privacy
     /// discipline as the per-idea agents.
     public func runPortfolioReasoning() {
-        guard !isRunningJob else {
+        guard !isRunningJob, !isDiscovering else {
             errorMessage = "Another AI run is finishing — try again in a moment."
             return
         }
@@ -717,7 +721,7 @@ public final class ShellViewModel: ObservableObject {
     /// test to kill it. Cloud-only (the loop needs a real model); falls back to a single
     /// local critique when there's no key, the cap is reached, or it's never-send.
     public func deepCritique(for idea: IdeaSeed) {
-        guard !isRunningJob else {
+        guard !isRunningJob, !isDiscovering else {
             errorMessage = "Another AI run is finishing — try again in a moment."
             return
         }
@@ -831,7 +835,7 @@ public final class ShellViewModel: ObservableObject {
     /// Cloud-first on the strongest judgment model with the local theme-based portrait
     /// as the fallback — same caps / reservation / privacy discipline as the agents.
     public func relearnTaste() {
-        guard !isRunningJob else {
+        guard !isRunningJob, !isDiscovering else {
             errorMessage = "Another AI run is finishing — try again in a moment."
             return
         }
@@ -961,7 +965,7 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func runNextCloudJob() {
-        guard !isRunningJob else { return }
+        guard !isRunningJob, !isDiscovering else { return }
         isRunningJob = true
         Task {
             var releaseReservation: () -> Void = {}
@@ -1427,7 +1431,7 @@ public final class ShellViewModel: ObservableObject {
     public func think(auto: Bool = false) async {
         // One paid cloud operation at a time — don't overlap with another cycle, a queued job,
         // or a scout run, all of which draw on the same spend headroom.
-        guard !isThinking, !isRunningJob, !isRunningScout else { return }
+        guard !isThinking, !isRunningJob, !isRunningScout, !isDiscovering else { return }
 
         let corpus = (try? store.listIdeas()) ?? ideas
         let allSources = (try? store.listSources()) ?? sources
@@ -1502,6 +1506,76 @@ public final class ShellViewModel: ObservableObject {
                 await MainActor.run {
                     if !auto { self.commit(self.localCognition(corpus: corpus, sources: allSources)) }
                     else { self.errorMessage = nil }
+                }
+            }
+        }
+    }
+
+    /// Discovery mode — hand the mind a SPACE and it researches it and proposes VC-grade theses,
+    /// even with an empty idea list. Cloud-only: this is generative research with no offline
+    /// equivalent. The space is the builder's own input; generated ideas are net-new, so there is
+    /// no never-send content to protect (only untainted corpus is passed as light context).
+    public func discover(vertical rawVertical: String) async {
+        let vertical = rawVertical.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !vertical.isEmpty else { return }
+        guard !isThinking, !isRunningJob, !isRunningScout, !isDiscovering else { return }
+
+        let corpus = (try? store.listIdeas()) ?? ideas
+        let allSources = (try? store.listSources()) ?? sources
+        let neverSendSourceIDs = Set(allSources.filter(\.neverSendToCloud).map(\.id))
+        let safeContext = corpus.filter { !$0.derivedFromNeverSend && Set($0.sourceIDs).isDisjoint(with: neverSendSourceIDs) }
+
+        let route = makeRouter().route(taskClass: .prototypeBrief, inputTokens: 1_800, outputTokens: 1_000)
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+        guard let provider = providers.first(where: { $0.providerName == route.provider }),
+              let key = apiKey(for: provider.providerName),
+              let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first
+        else {
+            errorMessage = "Discovery needs a cloud key — add one in Settings and it'll research any space you name."
+            return
+        }
+        // Four calls (map → generate → VC → reflect). Estimate each and reserve the sum.
+        let mapCost = route.estimatedCostUSD ?? 0
+        let genCost = CostEstimator.estimate(model: model, inputTokens: 1_200, outputTokens: 1_000) ?? 0
+        let vcCost = CostEstimator.estimate(model: model, inputTokens: 1_000, outputTokens: 1_000) ?? 0
+        let reflectCost = CostEstimator.estimate(model: model, inputTokens: 800, outputTokens: 500) ?? 0
+        let estimatedTotal = mapCost + genCost + vcCost + reflectCost
+        if route.estimatedCostUSD != nil, !fitsSpendCaps(estimatedTotal) {
+            errorMessage = "Spend cap reached — raise it in Settings to discover ideas in \(vertical)."
+            return
+        }
+        let releaseReservation = reserveSpend(estimatedTotal)
+        isDiscovering = true
+        let taste = tasteProfile?.source.hasPrefix("cloud") == true ? tasteProfile : nil
+        let builder = autonomyProfile
+        let useWeb = autonomyProfile.allowWebScouting
+        Task {
+            defer { Task { @MainActor in releaseReservation(); self.isDiscovering = false } }
+            let signals = useWeb ? await scoutSignals(query: vertical) : []
+            do {
+                let outcome = try await CognitiveLoop.discover(
+                    vertical: vertical, contextIdeas: safeContext, signals: signals,
+                    taste: taste, builderProfile: builder, provider: provider, model: model, apiKey: key
+                )
+                await MainActor.run {
+                    for response in outcome.responses {
+                        self.recordPortfolioUsage(provider: provider, model: model, response: response, taskClass: .prototypeBrief)
+                    }
+                    self.discoveryResults = outcome.theses
+                    guard let result = outcome.result, !result.thoughts.isEmpty else {
+                        self.errorMessage = "Couldn't map “\(vertical)” this time — try naming the space a little differently."
+                        return
+                    }
+                    self.commit(result)
+                    if outcome.theses.isEmpty {
+                        self.errorMessage = "Mapped “\(vertical)” but couldn't form ideas this time — try naming the space a little differently."
+                    } else {
+                        self.errorMessage = "Explored “\(vertical)” — found \(outcome.theses.count) idea\(outcome.theses.count == 1 ? "" : "s") and saved them to your Inbox."
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    self.errorMessage = "Discovery didn't land (\(error.localizedDescription)) — try again."
                 }
             }
         }
@@ -1606,7 +1680,7 @@ public final class ShellViewModel: ObservableObject {
     @discardableResult
     public func runAutonomousScout(useWeb: Bool = true, scheduledOnly: Bool = false, now: Date = Date()) async -> Bool {
         // Don't overlap with a cognitive cycle — both are paid cloud work on shared headroom.
-        guard !isRunningScout, !isThinking else { return false }
+        guard !isRunningScout, !isThinking, !isDiscovering else { return false }
         isRunningScout = true
         defer { isRunningScout = false }
         do {
