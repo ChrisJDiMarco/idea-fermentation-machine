@@ -55,6 +55,11 @@ enum IFMTheme {
     /// segment of a switch). Near-white in both appearances.
     static let onAccent = Color.white
 
+    /// One ordered categorical series so any indexed set of colors (theme clusters,
+    /// momentum lines, launch steps, kanban columns) reads consistently across screens.
+    static let categorical: [Color] = [green, blue, orange, purple, red, slate]
+    static func accent(_ index: Int) -> Color { categorical[((index % categorical.count) + categorical.count) % categorical.count] }
+
     /// All semantic tokens, used by guardrail tests to assert every token resolves
     /// in both appearances. Keyed by name for readable failures.
     static let allTokens: [(name: String, color: Color)] = [
@@ -71,6 +76,7 @@ enum IFMTheme {
 /// the views, so adopting it is visually identical while making the radius a single
 /// source of truth.
 enum IFMRadius {
+    static let xs: CGFloat = 4
     static let sm: CGFloat = 6
     static let md: CGFloat = 8
     static let lg: CGFloat = 12
@@ -109,6 +115,10 @@ extension Font {
     static let ifmRowTitle = Font.system(size: 13, weight: .semibold)
     static let ifmBody = Font.system(size: 13)
     static let ifmMetric = Font.system(size: 28, weight: .bold)
+    static let ifmMetricLg = Font.system(size: 28, weight: .bold)
+    static let ifmMetricSm = Font.system(size: 20, weight: .bold)
+    static let ifmEyebrow = Font.system(size: 11, weight: .heavy)
+    static let ifmCaption = Font.system(size: 11)
 }
 
 // MARK: - Elevation
@@ -216,6 +226,193 @@ struct IFMCard<Content: View>: View {
                     .stroke(IFMTheme.border.opacity(0.72), lineWidth: 1)
             }
             .ifmCardShadow()
+    }
+}
+
+/// The one header used inside cards and sections: an optional icon badge, a title +
+/// optional subtitle on the type ramp, and a trailing slot for a pill/button/info.
+/// Replaces the ~dozen hand-rolled header HStacks so every section reads identically.
+struct SectionHeader<Trailing: View>: View {
+    var title: String
+    var subtitle: String?
+    var symbol: String?
+    var accent: Color
+    @ViewBuilder var trailing: Trailing
+
+    init(_ title: String, subtitle: String? = nil, symbol: String? = nil, accent: Color = IFMTheme.slate, @ViewBuilder trailing: () -> Trailing = { EmptyView() }) {
+        self.title = title
+        self.subtitle = subtitle
+        self.symbol = symbol
+        self.accent = accent
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: IFMSpacing.sm) {
+            if let symbol {
+                SymbolBadge(symbol: symbol, color: accent, size: 32)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.ifmCardTitle)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.ifmCaption)
+                        .foregroundStyle(IFMTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer(minLength: 8)
+            trailing
+        }
+    }
+}
+
+/// A card with a standard `SectionHeader` and content beneath, on the shared spacing
+/// rhythm — the single highest-leverage unifier, replacing the `IFMCard { header +
+/// content }` idiom repeated across every page.
+struct SectionCard<Trailing: View, Content: View>: View {
+    var title: String
+    var subtitle: String?
+    var symbol: String?
+    var accent: Color
+    var padding: CGFloat
+    @ViewBuilder var trailing: Trailing
+    @ViewBuilder var content: Content
+
+    init(
+        _ title: String,
+        subtitle: String? = nil,
+        symbol: String? = nil,
+        accent: Color = IFMTheme.slate,
+        padding: CGFloat = IFMSpacing.lg,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() },
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.symbol = symbol
+        self.accent = accent
+        self.padding = padding
+        self.trailing = trailing()
+        self.content = content()
+    }
+
+    var body: some View {
+        IFMCard(padding: padding) {
+            VStack(alignment: .leading, spacing: IFMSpacing.sm) {
+                SectionHeader(title, subtitle: subtitle, symbol: symbol, accent: accent) { trailing }
+                content
+            }
+        }
+    }
+}
+
+/// A labeled switch row that centralizes the persist-on-change call repeated across
+/// every settings toggle.
+struct ToggleRow: View {
+    var title: String
+    var subtitle: String?
+    @Binding var isOn: Bool
+    var onChange: (() -> Void)?
+
+    init(_ title: String, subtitle: String? = nil, isOn: Binding<Bool>, onChange: (() -> Void)? = nil) {
+        self.title = title
+        self.subtitle = subtitle
+        self._isOn = isOn
+        self.onChange = onChange
+    }
+
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title).font(.ifmRowTitle)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.ifmCaption)
+                        .foregroundStyle(IFMTheme.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .toggleStyle(.switch)
+        .tint(IFMTheme.green)
+        .onChange(of: isOn) { _, _ in onChange?() }
+    }
+}
+
+/// A compact metric tile (eyebrow label + big value + optional sub/trend) on a soft
+/// surface — the one stat treatment, replacing the half-dozen one-off metric helpers.
+struct StatTile: View {
+    var value: String
+    var label: String
+    var sub: String? = nil
+    var symbol: String? = nil
+    var accent: Color = IFMTheme.text
+    var trend: [Double]? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 5) {
+                if let symbol {
+                    Image(systemName: symbol).font(.system(size: 10, weight: .bold)).foregroundStyle(accent)
+                }
+                Text(label.uppercased())
+                    .font(.ifmEyebrow)
+                    .tracking(0.4)
+                    .foregroundStyle(IFMTheme.muted)
+                    .lineLimit(1)
+            }
+            Text(value)
+                .font(.ifmMetricSm)
+                .foregroundStyle(accent)
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+            if let sub {
+                Text(sub).font(.ifmCaption).foregroundStyle(IFMTheme.muted).lineLimit(1)
+            }
+            if let trend, trend.count > 1 {
+                Sparkline(color: accent, values: trend).frame(height: 22)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(IFMSpacing.sm)
+        .background(IFMTheme.softPanel)
+        .ifmContainer(stroke: IFMTheme.border.opacity(0.6))
+    }
+}
+
+/// A label/value line for rails and compact lists.
+struct StatRow: View {
+    var title: String
+    var value: String
+    var accent: Color = IFMTheme.text
+
+    var body: some View {
+        HStack {
+            Text(title).font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+            Spacer()
+            Text(value).font(.ifmRowTitle).foregroundStyle(accent).monospacedDigit()
+        }
+    }
+}
+
+/// A configured/missing status line — one treatment for "key present", "connected", etc.
+struct StatusRow: View {
+    var title: String
+    var isGood: Bool
+    var goodText: String = "Configured"
+    var badText: String = "Missing"
+
+    var body: some View {
+        HStack {
+            Text(title).font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+            Spacer()
+            Label(isGood ? goodText : badText, systemImage: isGood ? "checkmark.circle.fill" : "circle")
+                .labelStyle(.titleAndIcon)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isGood ? IFMTheme.green : IFMTheme.muted)
+        }
     }
 }
 

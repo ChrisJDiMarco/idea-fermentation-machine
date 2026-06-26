@@ -54,6 +54,33 @@ struct ThemeTokenTests {
     }
 }
 
+@Suite("Categorical accents")
+struct CategoricalAccentTests {
+    @Test func accentSeriesIsStableAndWraps() {
+        #expect(IFMTheme.categorical.count == 6)
+        // Same index → same color everywhere (one ordered series, no per-screen drift).
+        #expect(IFMTheme.accent(0) == IFMTheme.categorical[0])
+        #expect(IFMTheme.accent(6) == IFMTheme.accent(0))   // wraps
+        #expect(IFMTheme.accent(-1) == IFMTheme.categorical[5]) // negative wraps safely
+        #expect(IFMRadius.xs == 4)
+    }
+}
+
+@Suite("Shared components")
+@MainActor
+struct SharedComponentTests {
+    // Instantiating the new components proves they compile and build a view tree —
+    // the unification layer the facelift depends on.
+    @Test func componentsInstantiate() {
+        _ = SectionHeader("Title", subtitle: "sub", symbol: "bolt", accent: IFMTheme.green)
+        _ = SectionCard("Title", subtitle: "sub", symbol: "bolt", accent: IFMTheme.green) { Text("body") }
+        _ = StatTile(value: "$1.00", label: "spent", symbol: "dollarsign.circle", accent: IFMTheme.green, trend: [1, 2, 3])
+        _ = StatRow(title: "Missions", value: "3", accent: IFMTheme.blue)
+        _ = StatusRow(title: "Firecrawl", isGood: true)
+        _ = ToggleRow("On", subtitle: "desc", isOn: .constant(true))
+    }
+}
+
 @Suite("Display terms")
 struct DisplayTermTests {
     @Test func acronymsAndCasingReadNaturally() {

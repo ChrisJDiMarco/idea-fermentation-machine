@@ -357,107 +357,315 @@ struct AutonomyPage: View {
     @ObservedObject var model: ShellViewModel
 
     var body: some View {
-        PageScaffold(title: "Autonomy", subtitle: "Teach the scout what to look for, then let it create source-backed idea candidates.", symbol: "sparkle.magnifyingglass", accent: IFMTheme.green) {
-            VStack(alignment: .leading, spacing: 16) {
-                IFMCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Autonomous Mode").font(.headline)
-                                Text("Runs best-effort scouting and saves candidates for review.")
-                                    .font(.caption)
-                                    .foregroundStyle(IFMTheme.muted)
-                            }
-                            Spacer()
-                            Toggle("", isOn: $model.autonomyProfile.isEnabled)
-                                .labelsHidden()
-                                .accessibilityLabel("Autonomous mode")
-                                .onChange(of: model.autonomyProfile.isEnabled) { _, _ in model.persistAutonomyConfiguration() }
-                        }
-                        Toggle("Allow public web scouting", isOn: $model.autonomyProfile.allowWebScouting)
-                            .onChange(of: model.autonomyProfile.allowWebScouting) { _, _ in model.persistAutonomyConfiguration() }
-                        Toggle("Require approval before build handoff", isOn: $model.autonomyProfile.requireApprovalBeforeBuildHandoff)
-                            .onChange(of: model.autonomyProfile.requireApprovalBeforeBuildHandoff) { _, _ in model.persistAutonomyConfiguration() }
-                            .help("While on (the default), the scout uses a free local template for new ideas. Turn off to let it spend a cloud call — within your spend caps — to synthesize an original idea from the day's signals.")
-                        Text("On by default: keeps autonomous runs from sending data to a paid model unattended.")
-                            .font(.caption2)
-                            .foregroundStyle(IFMTheme.muted)
-                    }
+        PageScaffold(title: "Automation", subtitle: "One switch runs the autonomous engine — scouting your lanes, learning your taste, and proposing source-backed ideas on your schedule.", symbol: "bolt.badge.automatic", accent: IFMTheme.green) {
+            VStack(alignment: .leading, spacing: IFMSpacing.xl) {
+                AutomationHeroCard(model: model)
+
+                automationGroup(title: "Scout", subtitle: "What it hunts for and the candidates it brings back.", symbol: "scope", accent: IFMTheme.green) {
+                    ScoutMissionsCard(model: model)
+                    ScoutFocusCard(model: model)
+                    AutomationProfileCard(model: model)
                 }
 
-                IFMCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Taste Profile").font(.headline)
-                        TextEditor(text: $model.autonomyProfile.tasteNotes)
-                            .frame(minHeight: 76)
-                            .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border) }
-                            .accessibilityLabel("Taste notes")
-                        TextField("Goals", text: $model.autonomyProfile.goals)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("Watch topics, comma separated", text: $model.autonomyProfile.watchTopics)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("Excluded topics", text: $model.autonomyProfile.excludedTopics)
-                            .textFieldStyle(.roundedBorder)
-                        TextField("Preferred outputs", text: $model.autonomyProfile.preferredOutputs)
-                            .textFieldStyle(.roundedBorder)
-                        HStack {
-                            Spacer()
-                            Button("Save Profile") { model.persistAutonomyConfiguration() }
-                                .buttonStyle(.borderedProminent)
-                        }
-                    }
+                automationGroup(title: "What it's learned about you", subtitle: "Tuned from your real decisions — not hand-edited.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
+                    LearnedTasteCard(model: model)
+                    RipenessCalibrationCard(model: model)
                 }
 
-                LearnedTasteCard(model: model)
+                automationGroup(title: "Schedule & spend", subtitle: "Guardrails for unattended runs.", symbol: "gauge.with.dots.needle.bottom.50percent", accent: IFMTheme.orange) {
+                    GuardrailsCard(model: model)
+                }
 
-                RipenessCalibrationCard(model: model)
-
-                ScoutFocusCard(model: model)
-
-                IFMCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack {
-                            Text("Scout Missions").font(.headline)
-                            Spacer()
-                            Button {
-                                Task { await model.runAutonomousScout() }
-                            } label: {
-                                HStack(spacing: 6) {
-                                    if model.isRunningScout { ProgressView().controlSize(.small) }
-                                    Text(model.isRunningScout ? "Scouting…" : "Run Scout Now")
-                                }
-                            }
-                            .disabled(model.isRunningScout || !model.autonomyProfile.isEnabled)
-                            .buttonStyle(.borderedProminent)
-                        }
-                        HStack {
-                            TextField("Mission title", text: $model.scoutMissionDraft.title)
-                                .textFieldStyle(.roundedBorder)
-                            TextField("Query", text: $model.scoutMissionDraft.query)
-                                .textFieldStyle(.roundedBorder)
-                            Button("Add") { model.addScoutMission() }
-                                .disabled(model.scoutMissionDraft.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                        if model.scoutMissions.isEmpty {
-                            Text("Add a mission like \"AI-native macOS utilities\" or run the scout to create a default mission from your watch topics.")
-                                .font(.caption)
-                                .foregroundStyle(IFMTheme.muted)
-                                .padding(.vertical, 4)
-                        } else {
-                            ForEach(model.scoutMissions) { mission in
-                                ScoutMissionRow(
-                                    mission: mission,
-                                    toggle: { model.toggleScoutMission(mission) },
-                                    delete: { model.deleteScoutMission(mission) }
-                                )
-                                Divider()
-                            }
-                        }
-                    }
+                automationGroup(title: "Privacy", subtitle: "What can leave this Mac.", symbol: "lock.shield", accent: IFMTheme.slate) {
+                    AutomationPrivacyCard(model: model)
                 }
             }
         } rail: {
             AutonomyRail(model: model)
+        }
+    }
+
+    @ViewBuilder
+    private func automationGroup<Content: View>(title: String, subtitle: String, symbol: String, accent: Color, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.sm) {
+            SectionHeader(title, subtitle: subtitle, symbol: symbol, accent: accent)
+                .padding(.horizontal, 2)
+            content()
+        }
+    }
+}
+
+/// The master switch for the whole autonomous engine, with at-a-glance telemetry.
+struct AutomationHeroCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    var body: some View {
+        let on = model.autonomyProfile.isEnabled
+        let accent = on ? IFMTheme.green : IFMTheme.slate
+        IFMCard(padding: IFMSpacing.xl) {
+            VStack(alignment: .leading, spacing: IFMSpacing.lg) {
+                HStack(alignment: .center, spacing: IFMSpacing.md) {
+                    SymbolBadge(symbol: on ? "bolt.fill" : "bolt.slash", color: accent, size: 54)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(on ? "Autonomous mode is ON" : "Autonomous mode is OFF")
+                            .font(.ifmTitle)
+                        Text(on
+                             ? "The scout is working your lanes and saving source-backed candidates for review."
+                             : "Turn it on to let the scout research your lanes and propose ideas — on your schedule, within your caps.")
+                            .font(.ifmBody)
+                            .foregroundStyle(IFMTheme.muted)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer(minLength: 12)
+                    Toggle("", isOn: $model.autonomyProfile.isEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .tint(IFMTheme.green)
+                        .scaleEffect(1.25)
+                        .accessibilityLabel("Autonomous mode")
+                        .onChange(of: model.autonomyProfile.isEnabled) { _, _ in model.persistAutonomyConfiguration() }
+                }
+
+                HStack(spacing: IFMSpacing.sm) {
+                    StatTile(value: lastRan, label: "Last ran", symbol: "clock.arrow.circlepath", accent: on ? IFMTheme.text : IFMTheme.muted)
+                    StatTile(value: nextDue, label: "Next due", symbol: "calendar", accent: on ? IFMTheme.text : IFMTheme.muted)
+                    StatTile(value: "\(model.scoutMissions.filter(\.isEnabled).count)", label: "Active missions", symbol: "scope", accent: on ? IFMTheme.green : IFMTheme.muted)
+                    StatTile(value: spentToday, label: "Spent today", sub: "of \(capText)", symbol: "dollarsign.circle", accent: spendAccent)
+                }
+                .opacity(on ? 1 : 0.7)
+
+                Button {
+                    Task { await model.runAutonomousScout() }
+                } label: {
+                    HStack(spacing: 6) {
+                        if model.isRunningScout { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "play.fill") }
+                        Text(model.isRunningScout ? "Scouting…" : "Run Scout Now")
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 34)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(IFMTheme.green)
+                .disabled(model.isRunningScout || !on)
+                .help(on ? "Run a scout pass right now." : "Turn autonomous mode on to run the scout.")
+            }
+        }
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(accent)
+                .frame(width: 3)
+                .padding(.vertical, IFMSpacing.lg)
+        }
+        .animation(IFMMotion.standard, value: on)
+    }
+
+    private var lastRan: String {
+        guard let log = model.logs.first(where: { $0.agentName == "Scout Agent" }) else { return "Never" }
+        return Self.relative.localizedString(for: log.createdAt, relativeTo: Date())
+    }
+
+    private var nextDue: String {
+        let enabled = model.scoutMissions.filter(\.isEnabled)
+        guard !enabled.isEmpty else { return "—" }
+        let now = Date()
+        let runs: [Date] = enabled.map { mission in
+            guard let last = mission.lastRunAt else { return now }
+            return Date(timeInterval: Double(max(1, mission.cadenceHours) * 3600), since: last)
+        }
+        guard let soonest = runs.min() else { return "—" }
+        return soonest <= now ? "Now" : Self.relative.localizedString(for: soonest, relativeTo: now)
+    }
+
+    private var spentToday: String { String(format: "$%.2f", model.spentTodayUSD) }
+    private var capText: String { String(format: "$%.2f", model.schedulerSettings.dailySpendCapUSD) }
+    private var spendAccent: Color {
+        let cap = model.schedulerSettings.dailySpendCapUSD
+        guard cap > 0 else { return IFMTheme.text }
+        let fraction = model.spentTodayUSD / cap
+        if fraction >= 1 { return IFMTheme.red }
+        if fraction >= 0.8 { return IFMTheme.orange }
+        return IFMTheme.green
+    }
+}
+
+struct ScoutMissionsCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        SectionCard("Scout Missions", subtitle: "The lanes the scout researches on its cadence.", symbol: "antenna.radiowaves.left.and.right", accent: IFMTheme.green, trailing: {
+            if !model.autonomyProfile.isEnabled { Pill(text: "Paused", color: IFMTheme.slate) }
+        }) {
+            HStack(spacing: IFMSpacing.xs) {
+                TextField("Mission title", text: $model.scoutMissionDraft.title)
+                    .textFieldStyle(.roundedBorder)
+                TextField("Query", text: $model.scoutMissionDraft.query)
+                    .textFieldStyle(.roundedBorder)
+                Button("Add") { model.addScoutMission() }
+                    .disabled(model.scoutMissionDraft.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            if model.scoutMissions.isEmpty {
+                Text("Add a mission like “AI-native macOS utilities”, or run the scout to seed one from your watch topics.")
+                    .font(.ifmCaption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .padding(.vertical, 4)
+            } else {
+                ForEach(model.scoutMissions) { mission in
+                    ScoutMissionRow(
+                        mission: mission,
+                        toggle: { model.toggleScoutMission(mission) },
+                        delete: { model.deleteScoutMission(mission) }
+                    )
+                    if mission.id != model.scoutMissions.last?.id { Divider().opacity(0.5) }
+                }
+            }
+        }
+    }
+}
+
+struct AutomationProfileCard: View {
+    @ObservedObject var model: ShellViewModel
+    @State private var expanded = false
+    // Edited in local state, committed only on "Save Brief". Binding the fields
+    // directly to the @Published profile let an unrelated reload() (e.g. setting a
+    // spend cap) silently wipe in-progress edits; local state is immune to that.
+    @State private var tasteNotes = ""
+    @State private var goals = ""
+    @State private var watchTopics = ""
+    @State private var excludedTopics = ""
+    @State private var preferredOutputs = ""
+    @State private var loaded = false
+
+    var body: some View {
+        SectionCard("Mission Brief", subtitle: "Who you are and what to watch — the scout reasons against this.", symbol: "person.text.rectangle", accent: IFMTheme.blue) {
+            DisclosureGroup(isExpanded: $expanded) {
+                VStack(alignment: .leading, spacing: IFMSpacing.xs) {
+                    Text("Taste notes").font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+                    TextEditor(text: $tasteNotes)
+                        .frame(minHeight: 70)
+                        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(IFMTheme.border) }
+                        .accessibilityLabel("Taste notes")
+                    TextField("Goals", text: $goals).textFieldStyle(.roundedBorder)
+                    TextField("Watch topics, comma separated", text: $watchTopics).textFieldStyle(.roundedBorder)
+                    TextField("Excluded topics", text: $excludedTopics).textFieldStyle(.roundedBorder)
+                    TextField("Preferred outputs", text: $preferredOutputs).textFieldStyle(.roundedBorder)
+                    HStack {
+                        Spacer()
+                        Button("Save Brief") { save() }
+                            .buttonStyle(.borderedProminent)
+                            .tint(IFMTheme.blue)
+                    }
+                }
+                .padding(.top, IFMSpacing.xs)
+            } label: {
+                Text(briefSummary).font(.ifmCaption).foregroundStyle(IFMTheme.muted).lineLimit(1)
+            }
+            .tint(IFMTheme.blue)
+        }
+        .onAppear(perform: loadIfNeeded)
+    }
+
+    private func loadIfNeeded() {
+        guard !loaded else { return }
+        let profile = model.autonomyProfile
+        tasteNotes = profile.tasteNotes
+        goals = profile.goals
+        watchTopics = profile.watchTopics
+        excludedTopics = profile.excludedTopics
+        preferredOutputs = profile.preferredOutputs
+        loaded = true
+    }
+
+    private func save() {
+        model.autonomyProfile.tasteNotes = tasteNotes
+        model.autonomyProfile.goals = goals
+        model.autonomyProfile.watchTopics = watchTopics
+        model.autonomyProfile.excludedTopics = excludedTopics
+        model.autonomyProfile.preferredOutputs = preferredOutputs
+        model.persistAutonomyConfiguration()
+    }
+
+    private var briefSummary: String {
+        let topics = (loaded ? watchTopics : model.autonomyProfile.watchTopics).trimmingCharacters(in: .whitespacesAndNewlines)
+        return topics.isEmpty ? "No watch topics yet — tap to set your brief." : "Watching: \(topics)"
+    }
+}
+
+struct GuardrailsCard: View {
+    @ObservedObject var model: ShellViewModel
+    @State private var daily = ""
+    @State private var monthly = ""
+
+    var body: some View {
+        SectionCard("Schedule & Spend", subtitle: "Limits for unattended runs. A manual click always overrides these.", symbol: "gauge.with.dots.needle.bottom.50percent", accent: IFMTheme.orange) {
+            ToggleRow(
+                "Let the scheduler run cloud jobs unattended",
+                subtitle: "When off, only your clicks ever spend money.",
+                isOn: Binding(
+                    get: { model.schedulerSettings.cloudAutoRun },
+                    set: { value in var settings = model.schedulerSettings; settings.cloudAutoRun = value; model.updateScheduler(settings) }
+                )
+            )
+            ToggleRow(
+                "Allow public web scouting",
+                subtitle: "Search public endpoints for fresh signals.",
+                isOn: $model.autonomyProfile.allowWebScouting,
+                onChange: { model.persistAutonomyConfiguration() }
+            )
+            ToggleRow(
+                "Require approval before unattended cloud synthesis",
+                subtitle: "On: scheduled runs use the free local template. Off: a scheduled run may spend a cloud call within caps.",
+                isOn: $model.autonomyProfile.requireApprovalBeforeBuildHandoff,
+                onChange: { model.persistAutonomyConfiguration() }
+            )
+            Divider().opacity(0.5)
+            HStack(alignment: .bottom, spacing: IFMSpacing.sm) {
+                capField(title: "Daily cap", text: $daily, current: model.schedulerSettings.dailySpendCapUSD) { model.updateDailySpendCap(daily); daily = "" }
+                capField(title: "Monthly cap", text: $monthly, current: model.schedulerSettings.monthlySpendCapUSD) { model.updateMonthlySpendCap(monthly); monthly = "" }
+                Button("Run Scheduler Now") { model.runSchedulerNow() }
+                    .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func capField(title: String, text: Binding<String>, current: Double, commit: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("\(title) (now \(String(format: "$%.2f", current)))")
+                .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+            HStack(spacing: 4) {
+                Text("$").foregroundStyle(IFMTheme.muted)
+                TextField("0.00", text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 70)
+                    .onSubmit(commit)
+                    .accessibilityLabel("\(title) spend cap")
+                Button("Set", action: commit)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+}
+
+struct AutomationPrivacyCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        SectionCard("Privacy", subtitle: "Never-send material stays on this Mac.", symbol: "lock.shield", accent: IFMTheme.slate) {
+            let blocked = model.sources.filter(\.neverSendToCloud).count
+            HStack(spacing: IFMSpacing.sm) {
+                StatTile(value: "\(blocked)", label: "Never-send sources", symbol: "lock", accent: blocked > 0 ? IFMTheme.green : IFMTheme.muted)
+                StatTile(value: String(format: "$%.2f", model.metrics.totalSpend), label: "Total cloud spend", symbol: "dollarsign.circle", accent: IFMTheme.text)
+            }
+            Button("Open Privacy Center") { model.selectedPage = .privacyCenter }
+                .buttonStyle(.bordered)
         }
     }
 }
@@ -531,47 +739,32 @@ struct LearnedTasteCard: View {
     @State private var confirmingReset = false
 
     var body: some View {
-        IFMCard {
-            VStack(alignment: .leading, spacing: 12) {
-                header
-
-                if let profile = model.tasteProfile, !profile.isEmpty {
-                    profileView(profile)
-                } else if model.tasteModel.isEmpty {
-                    Text("Nothing learned yet. Mark an idea Ready, build one, or archive one — then learn your taste to get a portrait of what pulls you in.")
-                        .font(.caption)
-                        .foregroundStyle(IFMTheme.muted)
-                        .padding(.vertical, 2)
-                }
-
-                // The raw learned themes stay as a secondary, always-local signal.
-                if !model.tasteModel.isEmpty {
-                    learnedThemes
-                }
-
-                conceptSpaceNote
-
-                actions
+        SectionCard("Learned Taste", subtitle: "Distilled from what you mark Ready, build, or archive — what genuinely pulls you in, not just topic words.", symbol: "brain.head.profile", accent: IFMTheme.purple, trailing: {
+            Pill(text: "\(model.tasteModel.observations) signal\(model.tasteModel.observations == 1 ? "" : "s")", color: IFMTheme.purple)
+        }) {
+            if let profile = model.tasteProfile, !profile.isEmpty {
+                profileView(profile)
+            } else if model.tasteModel.isEmpty {
+                Text("Nothing learned yet. Mark an idea Ready, build one, or archive one — then learn your taste to get a portrait of what pulls you in.")
+                    .font(.ifmCaption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .padding(.vertical, 2)
             }
+
+            // The raw learned themes stay as a secondary, always-local signal.
+            if !model.tasteModel.isEmpty {
+                learnedThemes
+            }
+
+            conceptSpaceNote
+
+            actions
         }
         .confirmationDialog("Reset learned taste?", isPresented: $confirmingReset, titleVisibility: .visible) {
             Button("Reset Learned Taste", role: .destructive) { model.resetLearnedTaste() }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Forgets every theme learned from your past decisions, and clears the distilled portrait. Your written taste profile above is unaffected.")
-        }
-    }
-
-    private var header: some View {
-        HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Learned Taste").font(.headline)
-                Text("Distilled from what you mark Ready, build, or archive — what genuinely pulls you in, not just topic words.")
-                    .font(.caption)
-                    .foregroundStyle(IFMTheme.muted)
-            }
-            Spacer()
-            Pill(text: "\(model.tasteModel.observations) signal\(model.tasteModel.observations == 1 ? "" : "s")", color: IFMTheme.purple)
         }
     }
 
@@ -703,35 +896,22 @@ struct RipenessCalibrationCard: View {
 
     var body: some View {
         let calibration = model.ripenessCalibration
-        return IFMCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("What Predicts Your Wins").font(.headline)
-                        Text("Calibrates ripeness from real build outcomes — the axes that separated what you shipped from what flopped count for more.")
-                            .font(.caption)
-                            .foregroundStyle(IFMTheme.muted)
-                    }
-                    Spacer()
-                    Image(systemName: "scalemass").foregroundStyle(IFMTheme.orange)
+        return SectionCard("What Predicts Your Wins", subtitle: "Calibrates ripeness from real build outcomes — the axes that separated what you shipped from what flopped count for more.", symbol: "scalemass", accent: IFMTheme.orange) {
+            if !calibration.isCalibrated {
+                Text(calibration.observations > 0
+                     ? "Recorded \(calibration.observations) outcome\(calibration.observations == 1 ? "" : "s") so far. Once you've built a few that went well and a few that didn't, ripeness re-weights toward what actually predicts your wins."
+                     : "No outcomes yet. Record what happened when you build (Shipped / Built / Abandoned / Flopped) and ripeness starts learning which signals matter for you.")
+                    .font(.ifmCaption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .padding(.vertical, 2)
+            } else {
+                ForEach(calibration.drivers(), id: \.axis) { driver in
+                    driverRow(label: Self.axisLabels[driver.axis] ?? driver.axis.capitalized, weight: driver.weight)
                 }
-
-                if !calibration.isCalibrated {
-                    Text(calibration.observations > 0
-                         ? "Recorded \(calibration.observations) outcome\(calibration.observations == 1 ? "" : "s") so far. Once you've built a few that went well and a few that didn't, ripeness re-weights toward what actually predicts your wins."
-                         : "No outcomes yet. Record what happened when you build (Shipped / Built / Abandoned / Flopped) and ripeness starts learning which signals matter for you.")
-                        .font(.caption)
-                        .foregroundStyle(IFMTheme.muted)
-                        .padding(.vertical, 2)
-                } else {
-                    ForEach(calibration.drivers(), id: \.axis) { driver in
-                        driverRow(label: Self.axisLabels[driver.axis] ?? driver.axis.capitalized, weight: driver.weight)
-                    }
-                    Text("Fit from \(calibration.observations) build outcome\(calibration.observations == 1 ? "" : "s"). 1.0× = the old equal weighting.")
-                        .font(.caption2)
-                        .foregroundStyle(IFMTheme.muted)
-                        .padding(.top, 2)
-                }
+                Text("Fit from \(calibration.observations) build outcome\(calibration.observations == 1 ? "" : "s"). 1.0× = the old equal weighting.")
+                    .font(.caption2)
+                    .foregroundStyle(IFMTheme.muted)
+                    .padding(.top, 2)
             }
         }
     }
@@ -767,31 +947,18 @@ struct ScoutFocusCard: View {
 
     var body: some View {
         let focus = model.scoutFocus
-        IFMCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .top) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Scout Focus").font(.headline)
-                        Text("What the scout hunts for — tuned from what you actually build and keep, not just your written query.")
-                            .font(.caption)
-                            .foregroundStyle(IFMTheme.muted)
-                    }
-                    Spacer()
-                    Image(systemName: "scope").foregroundStyle(IFMTheme.green)
+        return SectionCard("Scout Focus", subtitle: "What the scout hunts for — tuned from what you actually build and keep, not just your written query.", symbol: "scope", accent: IFMTheme.green) {
+            if focus.isEmpty {
+                Text("Searching your missions as written for now. Record a build outcome or mark ideas Ready, and the scout starts leaning toward your proven themes and away from lanes you've abandoned.")
+                    .font(.ifmCaption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .padding(.vertical, 2)
+            } else {
+                if !focus.focusTerms.isEmpty {
+                    focusRow(title: "Hunting harder for", color: IFMTheme.green, terms: focus.focusTerms)
                 }
-
-                if focus.isEmpty {
-                    Text("Searching your missions as written for now. Record a build outcome or mark ideas Ready, and the scout starts leaning toward your proven themes and away from lanes you've abandoned.")
-                        .font(.caption)
-                        .foregroundStyle(IFMTheme.muted)
-                        .padding(.vertical, 2)
-                } else {
-                    if !focus.focusTerms.isEmpty {
-                        focusRow(title: "Hunting harder for", color: IFMTheme.green, terms: focus.focusTerms)
-                    }
-                    if !focus.avoidTerms.isEmpty {
-                        focusRow(title: "Steering away from", color: IFMTheme.red, terms: focus.avoidTerms)
-                    }
+                if !focus.avoidTerms.isEmpty {
+                    focusRow(title: "Steering away from", color: IFMTheme.red, terms: focus.avoidTerms)
                 }
             }
         }
@@ -816,54 +983,24 @@ struct AutonomyRail: View {
     @ObservedObject var model: ShellViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Agent Loop").font(.system(size: 18, weight: .bold))
-            railStat("Mode", model.autonomyProfile.isEnabled ? "On" : "Off", model.autonomyProfile.isEnabled ? IFMTheme.green : IFMTheme.gray)
-            railStat("Missions", "\(model.scoutMissions.filter(\.isEnabled).count)", IFMTheme.green)
-            railStat("Scout logs", "\(model.logs.filter { $0.agentName == "Scout Agent" }.count)", IFMTheme.blue)
-            IFMCard(padding: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Search Stack").font(.caption.bold())
-                    searchRow("Firecrawl", model.hasKey(.firecrawl))
-                    searchRow("OpenAI web", model.hasKey(.openAI))
-                    HStack {
-                        Text("Public fallback")
-                        Spacer()
-                        Text("Always")
-                            .font(.caption.bold())
-                            .foregroundStyle(IFMTheme.green)
-                    }
-                    .font(.caption)
-                }
+        VStack(alignment: .leading, spacing: IFMSpacing.md) {
+            Text("Agent Loop").font(.ifmSectionTitle)
+            // Mode lives on the hero now; the rail carries supporting detail.
+            SectionCard("Activity", symbol: "waveform.path.ecg", accent: IFMTheme.green, padding: IFMSpacing.sm) {
+                StatRow(title: "Active missions", value: "\(model.scoutMissions.filter(\.isEnabled).count)", accent: IFMTheme.green)
+                StatRow(title: "Scout runs", value: "\(model.logs.filter { $0.agentName == "Scout Agent" }.count)", accent: IFMTheme.blue)
+                StatRow(title: "Spent today", value: String(format: "$%.2f", model.spentTodayUSD), accent: IFMTheme.text)
             }
-            IFMCard(padding: 12) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("What it does").font(.caption.bold())
-                    Text("Find signals, save sources, create a linked candidate idea, then queue a local ripeness pass.")
-                        .font(.caption)
-                        .foregroundStyle(IFMTheme.muted)
-                }
+            SectionCard("Search Stack", symbol: "magnifyingglass", accent: IFMTheme.slate, padding: IFMSpacing.sm) {
+                StatusRow(title: "Firecrawl", isGood: model.hasKey(.firecrawl), goodText: "Ready", badText: "No key")
+                StatusRow(title: "OpenAI web", isGood: model.hasKey(.openAI), goodText: "Ready", badText: "No key")
+                StatRow(title: "Public fallback", value: "Always", accent: IFMTheme.green)
             }
-        }
-    }
-
-    private func searchRow(_ title: String, _ configured: Bool) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(configured ? "Ready" : "No key")
-                .font(.caption.bold())
-                .foregroundStyle(configured ? IFMTheme.green : IFMTheme.muted)
-        }
-        .font(.caption)
-    }
-
-    private func railStat(_ title: String, _ value: String, _ color: Color) -> some View {
-        IFMCard(padding: 12) {
-            HStack {
-                Text(title)
-                Spacer()
-                Text(value).font(.headline).foregroundStyle(color)
+            SectionCard("What it does", symbol: "list.bullet.rectangle", accent: IFMTheme.slate, padding: IFMSpacing.sm) {
+                Text("Find signals, save sources, create a linked candidate idea, then queue a local ripeness pass.")
+                    .font(.ifmCaption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

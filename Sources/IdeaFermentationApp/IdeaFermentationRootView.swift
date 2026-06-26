@@ -1151,10 +1151,10 @@ struct ReadyPage: View {
     @ObservedObject var model: ShellViewModel
 
     var body: some View {
-        PageScaffold(title: "Ready To Build", subtitle: "Ideas that have ripened and are ready for prototyping.", symbol: nil, accent: IFMTheme.red) {
+        PageScaffold(title: "Ready To Build", subtitle: "Ideas that have ripened and are ready for prototyping.", symbol: nil, accent: IFMTheme.green) {
             VStack(spacing: 18) {
                 if model.ready.items.isEmpty {
-                    EmptyStateCard(title: "No ideas are ready yet", message: "Ready ideas appear after local scoring or cloud synthesis finds enough signal.", symbol: "sparkles", actionTitle: "Run Local Pass", accent: IFMTheme.red) {
+                    EmptyStateCard(title: "No ideas are ready yet", message: "Ready ideas appear after local scoring or cloud synthesis finds enough signal.", symbol: "sparkles", actionTitle: "Run Local Pass", accent: IFMTheme.green) {
                         model.runLocalFermentation()
                     }
                 } else {

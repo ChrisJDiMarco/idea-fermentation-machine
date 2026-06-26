@@ -29,7 +29,7 @@ public enum IFMPage: String, CaseIterable, Identifiable, Sendable {
         case .sources: "Sources"
         case .patterns: "Patterns"
         case .settings: "Settings"
-        case .autonomy: "Autonomy"
+        case .autonomy: "Automation"
         case .costCenter: "Cost Center"
         case .privacyCenter: "Privacy Center"
         }
@@ -45,7 +45,7 @@ public enum IFMPage: String, CaseIterable, Identifiable, Sendable {
         case .sources: "Notes, links, captures"
         case .patterns: "Connections found"
         case .settings: "Keys and data"
-        case .autonomy: "Agent scout"
+        case .autonomy: "Master switch & scout"
         case .costCenter: "Spend and queue"
         case .privacyCenter: "Cloud controls"
         }
@@ -61,7 +61,7 @@ public enum IFMPage: String, CaseIterable, Identifiable, Sendable {
         case .sources: "doc.text"
         case .patterns: "circle.grid.3x3"
         case .settings: "gearshape"
-        case .autonomy: "sparkle.magnifyingglass"
+        case .autonomy: "bolt.badge.automatic"
         case .costCenter: "chart.pie"
         case .privacyCenter: "lock.shield"
         }
@@ -72,7 +72,7 @@ public enum IFMPage: String, CaseIterable, Identifiable, Sendable {
         case .inbox: IFMTheme.blue
         case .fermenting: IFMTheme.green
         case .ripening: IFMTheme.orange
-        case .ready: IFMTheme.red
+        case .ready: IFMTheme.green
         case .archive: IFMTheme.gray
         case .sources: IFMTheme.purple
         case .patterns: IFMTheme.slate
@@ -200,6 +200,9 @@ public final class ShellViewModel: ObservableObject {
     @Published var keyDraft = ProviderKeyDraft()
     @Published var outcomeDraft = BuildOutcomeDraft()
     @Published var metrics = AppMetrics(diversity: 0, incubationLoad: 0, averageRipeness: 0, totalSpend: 0, pendingJobs: 0, approvalJobs: 0)
+    /// Cloud spend recorded since midnight — surfaced on the Automation hero. Cached in
+    /// reload() so the view never queries the store per render.
+    @Published var spentTodayUSD = 0.0
     @Published var isRunningJob = false
     @Published var schedulerSettings = SchedulerSettings()
     @Published var providerSettings = ProviderSettings()
@@ -297,6 +300,7 @@ public final class ShellViewModel: ObservableObject {
             // Built from the FULL corpus (not the search-filtered view) so the counts and
             // local-scoring manifold reflect the whole portfolio.
             conceptTaste = TasteManifold.build(ideas: try store.listIdeas(), outcomes: buildOutcomes)
+            spentTodayUSD = (try? store.usageTotalUSD(since: Calendar.current.startOfDay(for: Date()))) ?? 0
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {
