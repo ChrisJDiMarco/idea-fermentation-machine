@@ -85,16 +85,13 @@ public enum AutonomousScout {
     }
 
     static func synthesisPrompt(profile: AutonomyProfile, tasteProfile: TasteProfile? = nil) -> String {
-        let learnedTaste = (tasteProfile?.promptContext).map { "\n\nLearned taste (from real decisions):\n\($0)" } ?? ""
+        let builder = BuilderContext.promptBlock(profile: profile, taste: tasteProfile)
+        let builderBlock = builder.isEmpty ? "" : "\n\n\(builder)"
         return """
         You are an original product strategist for a solo builder. Given fresh external \
         signals and the builder's taste, propose ONE original, non-obvious product or app \
         idea that connects or extends the signals — NOT a summary of them. It must fit the \
-        taste below and be small enough for one person to prototype.
-
-        Builder taste: \(profile.tasteNotes.isEmpty ? "(unspecified)" : profile.tasteNotes)
-        Goals: \(profile.goals.isEmpty ? "(unspecified)" : profile.goals)
-        Avoid: \(profile.excludedTopics.isEmpty ? "(nothing specific)" : profile.excludedTopics)\(learnedTaste)
+        builder and be small enough for one person to prototype.\(builderBlock)
 
         Return ONLY JSON matching ExtractedSeed: \
         {"title": "<=70 chars", "body": "the idea, why it is non-obvious given the signals, \

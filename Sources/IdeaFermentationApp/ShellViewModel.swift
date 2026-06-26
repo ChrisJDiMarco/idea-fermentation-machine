@@ -735,10 +735,11 @@ public final class ShellViewModel: ObservableObject {
         isRunningJob = true
         selectedPage = page(for: idea.status)
         let taste = tasteProfile?.source.hasPrefix("cloud") == true ? tasteProfile : nil
+        let builder = autonomyProfile
         Task {
             defer { Task { @MainActor in releaseReservation(); self.isRunningJob = false } }
             do {
-                let outcome = try await AgentCritic.deepCritique(idea: idea, tasteProfile: taste, provider: provider, model: model, apiKey: key)
+                let outcome = try await AgentCritic.deepCritique(idea: idea, tasteProfile: taste, builderProfile: builder, provider: provider, model: model, apiKey: key)
                 await MainActor.run {
                     // Record every call that actually came back — even on a degraded run we
                     // still paid for it, so the spend ledger and caps stay honest.

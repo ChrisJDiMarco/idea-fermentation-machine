@@ -152,7 +152,8 @@ public enum PortfolioReasoner {
     }
 
     static func prompt(profile: AutonomyProfile, tasteProfile: TasteProfile? = nil) -> String {
-        let learnedTaste = (tasteProfile?.promptContext).map { "\n\nLearned taste (distilled from real decisions):\n\($0)" } ?? ""
+        let builder = BuilderContext.promptBlock(profile: profile, taste: tasteProfile)
+        let builderBlock = builder.isEmpty ? "" : "\n\n\(builder)"
         return """
         You are the chief of staff for a solo builder's idea portfolio. You are handed \
         their ENTIRE set of ideas — each with status, ripeness, tags, existing \
@@ -170,10 +171,7 @@ public enum PortfolioReasoner {
         - "gap": a blind spot — an angle or capability the portfolio clearly lacks given \
         its own themes.
         - "theme": an emergent through-line across several ideas the builder may not have \
-        named yet.
-
-        Builder goals: \(profile.goals.isEmpty ? "(unspecified)" : profile.goals)
-        Builder taste notes: \(profile.tasteNotes.isEmpty ? "(unspecified)" : profile.tasteNotes)\(learnedTaste)
+        named yet.\(builderBlock)
 
         Rules: cite ideas by their EXACT title. Be specific and opinionated — never \
         generic filler. Skip any category that has nothing real to say. At most two of \

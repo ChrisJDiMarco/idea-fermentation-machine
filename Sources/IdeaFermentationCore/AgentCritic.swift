@@ -9,6 +9,7 @@ public enum AgentCritic {
     public static func deepCritique(
         idea: IdeaSeed,
         tasteProfile: TasteProfile?,
+        builderProfile: AutonomyProfile? = nil,
         provider: any LLMProvider,
         model: LLMModel,
         apiKey: String
@@ -37,7 +38,7 @@ public enum AgentCritic {
         // transient failure here doesn't waste step 1: keep the draft, drop the interrogation.
         let interrogateRequest = LLMRequest(
             taskClass: .critique,
-            prompt: tasteContext(tasteProfile) + "You are a co-founder who kills bad ideas cheaply. Given an idea and a first-pass critique, name the SINGLE assumption the whole idea rests on — if it's false, the idea collapses — and the cheapest, fastest real-world test that would confirm or kill that assumption in days, not months. Return ONLY JSON: {\"loadBearing\":\"the one assumption\",\"experiment\":\"the cheapest kill-or-confirm test\"}.",
+            prompt: BuilderContext.promptPrefix(profile: builderProfile, taste: tasteProfile) + "You are a co-founder who kills bad ideas cheaply. Given an idea and a first-pass critique, name the SINGLE assumption the whole idea rests on — if it's false, the idea collapses — and the cheapest, fastest real-world test that would confirm or kill that assumption in days, not months. Return ONLY JSON: {\"loadBearing\":\"the one assumption\",\"experiment\":\"the cheapest kill-or-confirm test\"}.",
             input: "IDEA:\n\(ideaText)\n\nFIRST-PASS CRITIQUE:\n\(draft.text)",
             maxOutputTokens: 400
         )
@@ -81,9 +82,5 @@ public enum AgentCritic {
         }
         guard let start = text.firstIndex(of: "{"), let end = text.lastIndex(of: "}"), start < end else { return nil }
         return try? JSONSupport.decoder.decode(Interrogation.self, from: Data(text[start...end].utf8))
-    }
-
-    private static func tasteContext(_ profile: TasteProfile?) -> String {
-        (profile?.promptContext).map { "Builder's taste (judge fit against it):\n\($0)\n\n" } ?? ""
     }
 }
