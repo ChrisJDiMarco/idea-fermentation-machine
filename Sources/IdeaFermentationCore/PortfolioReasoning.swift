@@ -16,6 +16,16 @@ func neverSendDerivedIdeaIDs(ideas: [IdeaSeed], sources: [SourceItem]) -> Set<UU
     )
 }
 
+/// The set of ideas to withhold from cloud digests: the durable `derivedFromNeverSend`
+/// flag (set at creation/link time, survives broken links) UNIONED with a live
+/// re-derivation from the current links (so a freshly-linked source is caught even
+/// before the flag is written). The flag is the principled fix; the union is belt and
+/// suspenders so neither path alone can leak.
+func taintedIdeaIDs(ideas: [IdeaSeed], sources: [SourceItem]) -> Set<UUID> {
+    Set(ideas.filter(\.derivedFromNeverSend).map(\.id))
+        .union(neverSendDerivedIdeaIDs(ideas: ideas, sources: sources))
+}
+
 /// The kinds of cross-idea observation the reasoning pass can surface. Each is a
 /// portfolio-level insight — something only visible when you look at every idea at
 /// once, not idea by idea.
@@ -186,7 +196,7 @@ public enum PortfolioReasoner {
         outcomes: [BuildOutcome],
         taste: TasteModel
     ) -> String {
-        let neverSendIdeaIDs = neverSendDerivedIdeaIDs(ideas: ideas, sources: sources)
+        let neverSendIdeaIDs = taintedIdeaIDs(ideas: ideas, sources: sources)
         let titles = Dictionary(uniqueKeysWithValues: ideas.map { ($0.id, $0.title) })
         // A never-send-derived idea's title/tags may themselves be protected content, so
         // withhold them too — not just the body.

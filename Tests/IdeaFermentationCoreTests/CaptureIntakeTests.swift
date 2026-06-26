@@ -39,6 +39,29 @@ struct CaptureIntakeTests {
         #expect(sources[0].metadata.tags == result.tags)
     }
 
+    @Test func neverSendIdeaModeCaptureTaintsTheIdea() throws {
+        // A Chrome capture marked never-send AND saved as an idea copies the protected
+        // content into the idea body — that idea must inherit the taint, or a per-idea
+        // cloud run would leak it.
+        let store = try makeStore()
+        let payload = CapturePayload(
+            url: "https://internal.example.com/doc",
+            title: "Confidential plan",
+            selectionText: "CAPTURE-IDEA-MODE-SECRET",
+            tags: ["x"],
+            neverSendToCloud: true,
+            saveAs: "idea"
+        )
+        let result = try CaptureIntake.ingest(payload, into: store)
+        #expect(result.ideaID != nil)
+
+        let ideas = try store.listIdeas()
+        let idea = try #require(ideas.first)
+        #expect(idea.derivedFromNeverSend)
+        let digest = PortfolioReasoner.digest(ideas: ideas, connections: [], sources: try store.listSources(), outcomes: [], taste: TasteModel())
+        #expect(!digest.contains("CAPTURE-IDEA-MODE-SECRET"))
+    }
+
     @Test func ingestAutoLinksToRelatedIdea() throws {
         let store = try makeStore()
         let idea = try store.createIdea(title: "Ambient memory agent", body: "A private local AI memory agent that recalls context.", tags: ["memory"])

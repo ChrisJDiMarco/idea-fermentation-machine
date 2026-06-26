@@ -95,6 +95,11 @@ public struct IdeaSeed: Identifiable, Codable, Equatable, Sendable {
     public var evidence: Double
     public var personalResonance: Double
     public var timing: Double
+    /// True when this idea's content derives from a never-send source (created from one,
+    /// or scout evidence attached). Set once at creation/link time so every cloud digest
+    /// checks ONE flag instead of re-deriving it — and sticky, so an idea that ever held
+    /// protected content stays protected.
+    public var derivedFromNeverSend: Bool
 
     public init(
         id: UUID = UUID(),
@@ -113,7 +118,8 @@ public struct IdeaSeed: Identifiable, Codable, Equatable, Sendable {
         feasibility: Double = 0,
         evidence: Double = 0,
         personalResonance: Double = 0,
-        timing: Double = 0
+        timing: Double = 0,
+        derivedFromNeverSend: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -132,6 +138,7 @@ public struct IdeaSeed: Identifiable, Codable, Equatable, Sendable {
         self.evidence = evidence
         self.personalResonance = personalResonance
         self.timing = timing
+        self.derivedFromNeverSend = derivedFromNeverSend
     }
 }
 
@@ -438,6 +445,104 @@ public struct BuildOutcome: Identifiable, Codable, Equatable, Sendable {
         self.note = note
         self.createdAt = createdAt
     }
+}
+
+/// A recorded *prediction*: when the app promoted an idea to Ready, it snapshotted the
+/// score it was betting on. When a build outcome later lands, the forecast is resolved
+/// against reality — so the app can finally measure whether its own "Ready" calls are
+/// any good, instead of asking you to take its scoring on faith.
+public struct ForecastLog: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var ideaID: UUID
+    public var predictedAt: Date
+    public var ripenessAtPrediction: Double
+    public var predictedProbability: Double
+    public var novelty: Double
+    public var clarity: Double
+    public var evidence: Double
+    public var resonance: Double
+    public var feasibility: Double
+    public var timing: Double
+    public var source: String
+    public var resolvedAt: Date?
+    public var actualPositive: Bool?
+    public var outcomeResult: BuildResult?
+
+    public init(
+        id: UUID = UUID(), ideaID: UUID, predictedAt: Date = Date(),
+        ripenessAtPrediction: Double, predictedProbability: Double,
+        novelty: Double = 0, clarity: Double = 0, evidence: Double = 0,
+        resonance: Double = 0, feasibility: Double = 0, timing: Double = 0,
+        source: String = "auto",
+        resolvedAt: Date? = nil, actualPositive: Bool? = nil, outcomeResult: BuildResult? = nil
+    ) {
+        self.id = id
+        self.ideaID = ideaID
+        self.predictedAt = predictedAt
+        self.ripenessAtPrediction = ripenessAtPrediction
+        self.predictedProbability = predictedProbability
+        self.novelty = novelty
+        self.clarity = clarity
+        self.evidence = evidence
+        self.resonance = resonance
+        self.feasibility = feasibility
+        self.timing = timing
+        self.source = source
+        self.resolvedAt = resolvedAt
+        self.actualPositive = actualPositive
+        self.outcomeResult = outcomeResult
+    }
+
+    public var isResolved: Bool { resolvedAt != nil }
+
+    /// A Ready call is a positive prediction — it was right when the build went well.
+    public var wasCorrect: Bool? { actualPositive }
+
+    /// Map ripeness to a calibrated win probability so a Brier score measures real
+    /// calibration rather than pinning every prediction near a flat value. The Ready
+    /// threshold (78) maps to a coin flip; a perfect 100 to near-certainty.
+    public static func probability(forRipeness ripeness: Double) -> Double {
+        max(0.5, min(0.99, 0.5 + (ripeness - 78.0) / 44.0))
+    }
+}
+
+/// How well the app's Ready predictions have actually held up. Deliberately refuses to
+/// claim a hit-rate below a handful of resolved forecasts — small samples are noise.
+public struct ForecastAccuracy: Equatable, Sendable {
+    public var resolvedCount: Int
+    public var correctCount: Int
+    public var openCount: Int
+    /// Mean squared error of the predicted probabilities vs. reality. 0 is perfect;
+    /// 0.25 is a no-skill coin flip; above 0.25 means the Ready bar is miscalibrated.
+    public var brier: Double
+
+    public init(resolvedCount: Int = 0, correctCount: Int = 0, openCount: Int = 0, brier: Double = 0) {
+        self.resolvedCount = resolvedCount
+        self.correctCount = correctCount
+        self.openCount = openCount
+        self.brier = brier
+    }
+
+    public init(from logs: [ForecastLog]) {
+        let resolved = logs.filter { $0.isResolved && $0.actualPositive != nil }
+        resolvedCount = resolved.count
+        correctCount = resolved.filter { $0.wasCorrect == true }.count
+        openCount = logs.filter { !$0.isResolved }.count
+        if resolved.isEmpty {
+            brier = 0
+        } else {
+            brier = resolved.map { log in
+                let actual = (log.actualPositive == true) ? 1.0 : 0.0
+                let delta = log.predictedProbability - actual
+                return delta * delta
+            }.reduce(0, +) / Double(resolved.count)
+        }
+    }
+
+    public var hitRate: Double { resolvedCount > 0 ? Double(correctCount) / Double(resolvedCount) : 0 }
+    /// Below this many resolved forecasts we don't report a percentage — it's noise.
+    public var isReliable: Bool { resolvedCount >= 5 }
+    public var beatsCoinFlip: Bool { isReliable && brier < 0.25 }
 }
 
 public struct AppBudget: Codable, Equatable, Sendable {

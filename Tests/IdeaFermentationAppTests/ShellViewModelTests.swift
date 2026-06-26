@@ -330,6 +330,7 @@ struct ShellViewModelTests {
 
         let idea = try #require(store.listIdeas().first)
         #expect(idea.sourceIDs == [source.id])
+        #expect(idea.derivedFromNeverSend) // taint flag set at creation
         let digest = PortfolioReasoner.digest(
             ideas: try store.listIdeas(), connections: [],
             sources: try store.listSources(), outcomes: [], taste: TasteModel()
@@ -377,6 +378,51 @@ struct ShellViewModelTests {
         #expect(model.tasteProfile == nil)
         #expect(try store.loadTasteProfile() == nil)
         #expect(model.tasteModel.isEmpty)
+    }
+
+    @Test func softInterestSignalsTuneTasteButNotCommitmentModels() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        model.addIdea(title: "Ambient memory recall", body: "A thin seed.", tags: "memory")
+        let idea = try #require(model.ideas.first)
+
+        // Requesting a critique is a soft interest signal: it nudges the token taste
+        // model but must NOT count as a decision or feed the outcome-only calibration.
+        let calibrationBefore = model.ripenessCalibration.observations
+        for _ in 0..<5 { model.queueCritique(for: try #require(model.ideas.first)) }
+
+        #expect(model.tasteModel.affinity(for: ["memory"]) > 0)        // taste nudged
+        #expect(model.tasteModel.observations == 0)                    // not a committed decision
+        #expect(model.ripenessCalibration.observations == calibrationBefore) // calibration untouched
+        // Soft signals alone never promote a thin idea to Ready.
+        #expect(try store.idea(id: idea.id).status != .ready)
+    }
+
+    @Test func readyIdeasGetOneForecastThatResolvesOnOutcome() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        model.addIdea(title: "Strong idea", body: "A buildable seed.", tags: "build")
+        let idea = try #require(model.ideas.first)
+
+        model.markIdeaReady(idea)     // promotion = the app's prediction
+        model.reload(); model.reload() // idempotent: still exactly one forecast
+
+        #expect(try store.forecastLogs().filter { $0.ideaID == idea.id }.count == 1)
+        #expect(model.forecastAccuracy.openCount >= 1)
+        #expect(model.forecastAccuracy.resolvedCount == 0)
+
+        // Recording the outcome resolves the prediction against reality.
+        model.startBuildOutcome(for: try store.idea(id: idea.id))
+        model.outcomeDraft.result = .shipped
+        model.saveBuildOutcomeDraft()
+
+        let fetched = try store.latestForecast(for: idea.id)
+        let resolved = try #require(fetched)
+        #expect(resolved.isResolved)
+        #expect(resolved.actualPositive == true)
+        #expect(try store.forecastLogs().filter { $0.ideaID == idea.id }.count == 1) // no duplicate
+        #expect(model.forecastAccuracy.resolvedCount == 1)
+        #expect(model.forecastAccuracy.correctCount == 1)
     }
 
     @Test func recordingOutcomesRefitsRipenessCalibration() throws {

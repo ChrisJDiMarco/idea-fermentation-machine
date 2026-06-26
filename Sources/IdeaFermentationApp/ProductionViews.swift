@@ -370,6 +370,7 @@ struct AutonomyPage: View {
                 automationGroup(title: "What it's learned about you", subtitle: "Tuned from your real decisions — not hand-edited.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
                     LearnedTasteCard(model: model)
                     RipenessCalibrationCard(model: model)
+                    ForecastAccuracyCard(model: model)
                 }
 
                 automationGroup(title: "Schedule & spend", subtitle: "Guardrails for unattended runs.", symbol: "gauge.with.dots.needle.bottom.50percent", accent: IFMTheme.orange) {
@@ -939,6 +940,50 @@ struct RipenessCalibrationCard: View {
                 .foregroundStyle(color)
                 .frame(width: 38, alignment: .trailing)
         }
+    }
+}
+
+struct ForecastAccuracyCard: View {
+    @ObservedObject var model: ShellViewModel
+
+    var body: some View {
+        let acc = model.forecastAccuracy
+        return SectionCard("Are Its Calls Any Good?", subtitle: "When the app promotes an idea to Ready it's making a bet. Here's how those bets have actually played out.", symbol: "target", accent: IFMTheme.green, trailing: {
+            if acc.openCount > 0 { Pill(text: "\(acc.openCount) open", color: IFMTheme.slate) }
+        }) {
+            if acc.isReliable {
+                HStack(spacing: IFMSpacing.sm) {
+                    StatTile(value: "\(Int((acc.hitRate * 100).rounded()))%", label: "Ready calls that paid off", symbol: "checkmark.seal", accent: acc.beatsCoinFlip ? IFMTheme.green : IFMTheme.orange)
+                    StatTile(value: String(format: "%.2f", acc.brier), label: "Brier (lower = sharper)", symbol: "scope", accent: acc.beatsCoinFlip ? IFMTheme.green : IFMTheme.orange)
+                }
+                Text(verdict(acc))
+                    .font(.ifmCaption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(buildingCopy(acc))
+                    .font(.ifmCaption)
+                    .foregroundStyle(IFMTheme.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func buildingCopy(_ acc: ForecastAccuracy) -> String {
+        if acc.resolvedCount == 0 && acc.openCount == 0 {
+            return "No bets yet. When ideas reach Ready and you record what happened (Shipped / Built / Abandoned / Flopped), the app starts grading its own calls."
+        }
+        if acc.resolvedCount == 0 {
+            return "Watching \(acc.openCount) Ready call\(acc.openCount == 1 ? "" : "s"). Record what happens when you build them and the app can start scoring itself."
+        }
+        return "\(acc.resolvedCount) call\(acc.resolvedCount == 1 ? "" : "s") played out so far — need about 5 before a hit-rate means anything."
+    }
+
+    private func verdict(_ acc: ForecastAccuracy) -> String {
+        if acc.brier < 0.18 { return "Better than a coin flip — when it says Ready, it's usually right. Trust the funnel." }
+        if acc.brier < 0.25 { return "A bit better than a coin flip. The Ready bar is roughly calibrated." }
+        return "About a coin flip or worse — the Ready bar looks over-confident. Treat “Ready” as a suggestion, not a verdict, for now."
     }
 }
 

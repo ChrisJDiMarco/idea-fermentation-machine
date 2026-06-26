@@ -96,6 +96,36 @@ struct PortfolioReasoningTests {
         #expect(digest.contains("[private idea"))
     }
 
+    @Test func taintFlagAloneWithholdsIdeaFromDigest() throws {
+        // The principled fix: the durable flag protects the idea even when NO never-send
+        // source is present in the digest's inputs (which the link-derivation needs).
+        let store = try makeStore()
+        var idea = try store.createIdea(title: "Tainted idea", body: "FLAG-ONLY-SECRET", tags: ["x"])
+        idea.derivedFromNeverSend = true
+        try store.upsertIdea(idea)
+
+        let digest = PortfolioReasoner.digest(ideas: try store.listIdeas(), connections: [], sources: [], outcomes: [], taste: TasteModel())
+        #expect(!digest.contains("FLAG-ONLY-SECRET"))
+        #expect(!digest.contains("Tainted idea"))
+        #expect(digest.contains("[private idea"))
+    }
+
+    @Test func taintFlagIsStickyAcrossWrites() throws {
+        // Once tainted, a later write that forgets the flag must not clear it — the
+        // protected content was already copied into the body.
+        let store = try makeStore()
+        var idea = try store.createIdea(title: "Idea", body: "x")
+        idea.derivedFromNeverSend = true
+        try store.upsertIdea(idea)
+        #expect(try store.idea(id: idea.id).derivedFromNeverSend)
+
+        var reloaded = try store.idea(id: idea.id)
+        reloaded.derivedFromNeverSend = false
+        reloaded.title = "Edited"
+        try store.upsertIdea(reloaded)
+        #expect(try store.idea(id: idea.id).derivedFromNeverSend) // sticky
+    }
+
     @Test func digestRedactsNeverSendSourcedIdeaBodies() throws {
         let store = try makeStore()
         let secret = try store.createSource(SourceItem(type: .note, title: "Vault", body: "z", neverSendToCloud: true))

@@ -18,7 +18,7 @@ public enum AgentLearning {
         // content in its title and tags (a captured page title; tags mined from its
         // body), not just its body — so withhold ALL of it from the cloud digest, in
         // both link directions.
-        let neverSendIdeaIDs = neverSendDerivedIdeaIDs(ideas: ideas, sources: sources)
+        let neverSendIdeaIDs = taintedIdeaIDs(ideas: ideas, sources: sources)
         func safeTitle(_ id: UUID) -> String { neverSendIdeaIDs.contains(id) ? "[private idea]" : (ideaTitles[id] ?? "Idea") }
 
         notes += jobs

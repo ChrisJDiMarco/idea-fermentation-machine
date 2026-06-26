@@ -117,7 +117,7 @@ public enum TasteDistiller {
         // source (a captured page's title; tags mined from its body), so withhold the
         // WHOLE line, not just the body. Local storage keeps the content; the cloud gets
         // a placeholder.
-        let redacted = neverSendDerivedIdeaIDs(ideas: liked + disliked, sources: sources)
+        let redacted = taintedIdeaIDs(ideas: liked + disliked, sources: sources)
         func line(_ idea: IdeaSeed) -> String {
             guard !redacted.contains(idea.id) else { return "- [private idea — content withheld]" }
             let tags = idea.manualTags.isEmpty ? "" : " — tags: \(idea.manualTags.joined(separator: ", "))"

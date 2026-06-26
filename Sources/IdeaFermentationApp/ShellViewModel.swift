@@ -221,6 +221,8 @@ public final class ShellViewModel: ObservableObject {
     /// Concept-space taste over the whole portfolio. Cached here and rebuilt in
     /// reload() (after every mutation) so the UI never recomputes centroids per render.
     @Published var conceptTaste = TasteManifold()
+    /// How well the app's own Ready predictions have held up against real outcomes.
+    @Published var forecastAccuracy = ForecastAccuracy()
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -301,6 +303,7 @@ public final class ShellViewModel: ObservableObject {
             // local-scoring manifold reflect the whole portfolio.
             conceptTaste = TasteManifold.build(ideas: try store.listIdeas(), outcomes: buildOutcomes)
             spentTodayUSD = (try? store.usageTotalUSD(since: Calendar.current.startOfDay(for: Date()))) ?? 0
+            forecastAccuracy = refreshForecasts()
             metrics = try makeMetrics()
             refreshPageModels()
         } catch {
@@ -452,6 +455,10 @@ public final class ShellViewModel: ObservableObject {
             return
         }
 
+        // Asking the AI to engage with this idea is a soft signal of interest — past the
+        // dedup guard so a duplicate click while one runs doesn't re-teach.
+        registerInterest(in: idea)
+
         let input = "\(idea.title)\n\(idea.body)\n\(idea.manualTags.joined(separator: " "))"
         let route = makeRouter().route(
             taskClass: taskClass,
@@ -468,8 +475,16 @@ public final class ShellViewModel: ObservableObject {
             return
         }
 
-        // Privacy net: if every part of the payload is marked never-send, keep it local.
+        // Privacy net: a tainted idea's own body is protected content, so it never goes
+        // to the cloud; and if every part of the payload is never-send, keep it local.
+        // Check both the durable flag AND a live never-send link, so a writer that forgot
+        // to stamp the flag still can't leak the body.
         let relatedSources = idea.sourceIDs.compactMap { id in sources.first { $0.id == id } }
+        if idea.derivedFromNeverSend || relatedSources.contains(where: { $0.neverSendToCloud }) {
+            runLocalAgentFallback(for: idea, taskClass: taskClass, label: label,
+                                  reason: "\(idea.title) came from never-send material, so it stayed local. Lift the privacy block on its source to use the cloud.")
+            return
+        }
         let preview = PrivacyPolicy.preview(idea: idea, sources: relatedSources, taskClass: taskClass)
         guard preview.maySend else {
             runLocalAgentFallback(for: idea, taskClass: taskClass, label: label,
@@ -949,7 +964,12 @@ public final class ShellViewModel: ObservableObject {
 
     public func duplicateIdea(_ idea: IdeaSeed) {
         do {
-            _ = try store.createIdea(title: "\(idea.title) Copy", body: idea.body, tags: idea.manualTags, status: .inbox, stage: .seed)
+            var copy = try store.createIdea(title: "\(idea.title) Copy", body: idea.body, tags: idea.manualTags, status: .inbox, stage: .seed)
+            // A copy of a tainted idea carries the same protected content.
+            if idea.derivedFromNeverSend {
+                copy.derivedFromNeverSend = true
+                try store.upsertIdea(copy)
+            }
             selectedPage = .inbox
             reload()
         } catch {
@@ -1016,6 +1036,17 @@ public final class ShellViewModel: ObservableObject {
             var updated = source
             updated.neverSendToCloud.toggle()
             try store.upsertSource(updated)
+            // Marking a source never-send taints every idea that draws on it, so their
+            // bodies are withheld too. (Taint is sticky — un-marking doesn't clear it,
+            // since the protected content was already copied into the idea.)
+            if updated.neverSendToCloud {
+                for ideaID in updated.linkedIdeaIDs {
+                    if var idea = try? store.idea(id: ideaID), !idea.derivedFromNeverSend {
+                        idea.derivedFromNeverSend = true
+                        try store.upsertIdea(idea)
+                    }
+                }
+            }
             reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -1029,12 +1060,18 @@ public final class ShellViewModel: ObservableObject {
             // directions so privacy redaction (which keys on the idea↔source link) still
             // protects a never-send source's content that now lives in the idea body.
             idea.sourceIDs = [source.id]
+            // The body is a copy of the source body — if that source is never-send, the
+            // idea inherits the taint so every cloud path withholds it from here on.
+            idea.derivedFromNeverSend = source.neverSendToCloud
             try store.upsertIdea(idea)
             if !source.linkedIdeaIDs.contains(idea.id) {
                 var linkedSource = source
                 linkedSource.linkedIdeaIDs.append(idea.id)
                 try store.upsertSource(linkedSource)
             }
+            // Pulling an idea out of a source is a soft signal of interest (success path
+            // only — the duplicate branch below doesn't re-teach).
+            registerInterest(in: idea)
             selectedPage = .inbox
             reload()
             errorMessage = "Added “\(idea.title)” to the Inbox."
@@ -1233,6 +1270,11 @@ public final class ShellViewModel: ObservableObject {
                 let seed = synthesized ?? AutonomousScout.draftIdea(profile: autonomyProfile, mission: mission, signals: signals)
                 var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
                 idea.sourceIDs = sourceIDs
+                // When web scouting is off the fallback sources are never-send, so a
+                // scout idea built from them inherits the taint.
+                if sourceIDs.contains(where: { (try? store.source(id: $0))?.neverSendToCloud == true }) {
+                    idea.derivedFromNeverSend = true
+                }
                 try store.upsertIdea(idea)
                 let job = try store.enqueue(FermentationJob(
                     ideaID: idea.id,
@@ -1693,6 +1735,54 @@ public final class ShellViewModel: ObservableObject {
         FermentationEngine(store: store, router: makeRouter(), taste: TasteSignals(profile: autonomyProfile, learned: tasteModel), calibration: ripenessCalibration)
     }
 
+    /// Snapshot a forecast for any idea that has reached Ready without one yet (the
+    /// app's *prediction*), then recompute how well past predictions have held up.
+    /// Idempotent: the open-forecast guard means it's safe to run on every reload.
+    private func refreshForecasts() -> ForecastAccuracy {
+        do {
+            var logs = try store.forecastLogs()
+            let withOpen = Set(logs.filter { !$0.isResolved }.map(\.ideaID))
+            // Use the full store, not the search-filtered view, so a forecast is recorded
+            // regardless of the active search.
+            for idea in try store.listIdeas() where idea.status == .ready && !withOpen.contains(idea.id) {
+                let log = makeForecast(for: idea)
+                try store.saveForecastLog(log)
+                logs.insert(log, at: 0)
+            }
+            return ForecastAccuracy(from: logs)
+        } catch {
+            return forecastAccuracy
+        }
+    }
+
+    private func makeForecast(for idea: IdeaSeed) -> ForecastLog {
+        // Prefer the stored ripeness score (it has all six axes incl. clarity, which the
+        // idea row doesn't); fall back to the idea's own axis fields.
+        let score = (try? store.ripenessScores(for: idea.id))?.sorted { $0.createdAt > $1.createdAt }.first
+        return ForecastLog(
+            ideaID: idea.id,
+            ripenessAtPrediction: idea.ripeness,
+            predictedProbability: ForecastLog.probability(forRipeness: idea.ripeness),
+            novelty: score?.novelty ?? idea.novelty,
+            clarity: score?.clarity ?? 0,
+            evidence: score?.evidence ?? idea.evidence,
+            resonance: score?.personalResonance ?? idea.personalResonance,
+            feasibility: score?.feasibility ?? idea.feasibility,
+            timing: score?.timing ?? idea.timing,
+            source: "auto"
+        )
+    }
+
+    /// Resolve an idea's forecast against a real outcome. Re-records overwrite the same
+    /// row (no duplicate), mirroring how taste reversal is handled on re-record.
+    private func resolveForecast(ideaID: UUID, result: BuildResult) {
+        guard var forecast = try? store.latestForecast(for: ideaID) else { return }
+        forecast.resolvedAt = Date()
+        forecast.actualPositive = result.isPositive
+        forecast.outcomeResult = result
+        try? store.saveForecastLog(forecast)
+    }
+
     /// Refit the ripeness re-weighting from build outcomes: each outcome pairs the
     /// idea's axis scores with whether the build went well. Cheap, local, deterministic.
     private func recalibrateRipeness() {
@@ -1727,19 +1817,30 @@ public final class ShellViewModel: ObservableObject {
     /// commit to an idea (mark Ready, build), −1 when they let an unripe idea die.
     /// The next local pass scores similar ideas accordingly — the taste profile
     /// tuning itself instead of being hand-edited.
-    private func reinforceTaste(with idea: IdeaSeed, label: Double, rate: Double = TasteModel.defaultLearningRate) {
+    private func reinforceTaste(with idea: IdeaSeed, label: Double, rate: Double = TasteModel.defaultLearningRate, countsAsObservation: Bool = true) {
         guard label != 0 else { return }
         do {
             // Learn over the idea's curated themes (tags + distinctive title words),
             // not its whole body — so the model captures real themes, not filler.
             let terms = TasteModel.themeTerms(title: idea.title, tags: idea.manualTags)
             guard !terms.isEmpty else { return }
-            let updated = try store.loadTasteModel().reinforced(with: terms, label: label, rate: rate)
+            let updated = try store.loadTasteModel().reinforced(with: terms, label: label, rate: rate, countsAsObservation: countsAsObservation)
             try store.saveTasteModel(updated)
             tasteModel = updated
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    /// A soft, high-frequency *intent* signal: the operator asked the AI to engage with
+    /// this idea (critique, brief) or pulled it out of a source. It nudges the token
+    /// taste model gently and is NOT counted as a committed decision.
+    ///
+    /// Token-bag only: never feeds RipenessCalibration or TasteManifold (those stay on
+    /// real commitments — Ready / build outcomes), and it never mutates idea status or
+    /// writes a BuildOutcome.
+    private func registerInterest(in idea: IdeaSeed) {
+        reinforceTaste(with: idea, label: 1, rate: TasteModel.softInterestRate, countsAsObservation: false)
     }
 
     // MARK: Build outcome loop
@@ -1773,6 +1874,9 @@ public final class ShellViewModel: ObservableObject {
             // Building is the strongest taste signal there is — reinforce harder than
             // a mere mark-ready, in the direction the outcome implies.
             reinforceTaste(with: idea, label: result.tasteLabel, rate: result.tasteRate)
+            // Resolve the app's own prediction against reality before archiving, so it
+            // can measure whether its Ready calls actually pan out.
+            resolveForecast(ideaID: ideaID, result: result)
             // A recorded outcome is an endpoint: the idea composts into the Archive,
             // now carrying its real result and lesson instead of a heuristic guess.
             updateIdea(idea) { $0.status = .archived }
@@ -1812,7 +1916,12 @@ public final class ShellViewModel: ObservableObject {
     private func attachScoutEvidence(_ sourceIDs: [UUID], to idea: IdeaSeed, mission: ScoutMission) throws {
         var target = idea
         let existing = Set(target.sourceIDs)
-        target.sourceIDs += sourceIDs.filter { !existing.contains($0) }
+        let newSourceIDs = sourceIDs.filter { !existing.contains($0) }
+        target.sourceIDs += newSourceIDs
+        // Attaching a never-send source as evidence taints the idea.
+        if newSourceIDs.contains(where: { (try? store.source(id: $0))?.neverSendToCloud == true }) {
+            target.derivedFromNeverSend = true
+        }
         if target.status == .archived {
             target.status = .fermenting
             target.stage = .brewing

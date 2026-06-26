@@ -114,6 +114,9 @@ public enum CaptureIntake {
         try store.upsertSource(nextSource)
         var nextIdea = idea
         if !nextIdea.sourceIDs.contains(source.id) { nextIdea.sourceIDs.append(source.id) }
+        // An idea minted from a never-send capture has the protected content in its body,
+        // so it inherits the taint (sticky via the upsert's OR).
+        if source.neverSendToCloud { nextIdea.derivedFromNeverSend = true }
         try store.upsertIdea(nextIdea)
     }
 

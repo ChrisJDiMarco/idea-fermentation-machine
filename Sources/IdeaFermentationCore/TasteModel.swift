@@ -30,6 +30,11 @@ public struct TasteModel: Codable, Equatable, Sendable {
     /// How far each feedback event moves a token's weight.
     public static let defaultLearningRate = 0.6
 
+    /// A much gentler rate for soft *interest* gestures (asking for a critique or a
+    /// brief, creating an idea from a source) — high-frequency intent that should nudge
+    /// taste without counting as a committed decision. About a quarter of mark-Ready.
+    public static let softInterestRate = 0.15
+
     public init(weights: [String: Double] = [:], observations: Int = 0) {
         self.weights = weights
         self.observations = observations
@@ -39,14 +44,17 @@ public struct TasteModel: Codable, Equatable, Sendable {
 
     /// Returns a NEW model with `tokens` reinforced toward `label` (+1 liked, −1
     /// disliked). Immutable by design — never mutates the receiver.
-    public func reinforced(with tokens: Set<String>, label: Double, rate: Double = defaultLearningRate) -> TasteModel {
+    /// `countsAsObservation: false` applies the weight delta but leaves the observation
+    /// count untouched — for soft interest signals that should tune affinity without
+    /// inflating the "decisions taught" confidence cue.
+    public func reinforced(with tokens: Set<String>, label: Double, rate: Double = defaultLearningRate, countsAsObservation: Bool = true) -> TasteModel {
         guard !tokens.isEmpty, label != 0 else { return self }
         var next = weights
         for token in tokens {
             let updated = (next[token] ?? 0) + rate * label
             next[token] = min(Self.weightCap, max(-Self.weightCap, updated))
         }
-        return TasteModel(weights: next, observations: observations + 1)
+        return TasteModel(weights: next, observations: observations + (countsAsObservation ? 1 : 0))
     }
 
     /// A bounded affinity in (−1, 1): how much the learned model likes or dislikes

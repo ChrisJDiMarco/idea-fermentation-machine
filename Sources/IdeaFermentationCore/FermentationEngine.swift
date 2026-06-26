@@ -211,8 +211,16 @@ public final class FermentationEngine {
             let idea = try store.idea(id: ideaID)
             // Tolerate a source that was deleted after it was linked — skip it rather
             // than failing the whole job. deleteSource also scrubs these references.
+            // An idea whose content derives from a never-send source must not have its
+            // body leave the machine on a cloud job, even though the body is "the idea's
+            // own words" — those words ARE the protected content. Check the durable flag
+            // AND a live never-send link, so a writer that forgot the flag can't leak.
             let sources = idea.sourceIDs.compactMap { try? store.source(id: $0) }
-            base = PrivacyPolicy.preview(idea: idea, sources: sources, taskClass: job.taskClass).payload
+            if idea.derivedFromNeverSend || sources.contains(where: { $0.neverSendToCloud }) {
+                base = "[Idea withheld — derived from never-send material.]"
+            } else {
+                base = PrivacyPolicy.preview(idea: idea, sources: sources, taskClass: job.taskClass).payload
+            }
         } else if let sourceID = job.sourceID {
             let source = try store.source(id: sourceID)
             // A source flagged never-send must not have ANY of its content leave the

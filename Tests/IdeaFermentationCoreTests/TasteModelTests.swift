@@ -11,6 +11,16 @@ struct TasteModelTests {
         #expect(model.affinity(for: Tokenizer.vocabulary("ambient memory app")) == 0)
     }
 
+    @Test func softInterestMovesAffinityWithoutCountingAsObservation() {
+        let base = TasteModel()
+        let soft = base.reinforced(with: ["memory"], label: 1, rate: TasteModel.softInterestRate, countsAsObservation: false)
+        #expect(soft.observations == 0)             // not counted as a committed decision
+        #expect(soft.affinity(for: ["memory"]) > 0) // but affinity is still nudged
+        // A committed decision on the same theme still increments the count.
+        let committed = soft.reinforced(with: ["memory"], label: 1)
+        #expect(committed.observations == 1)
+    }
+
     @Test func reinforcingIsImmutableAndDirectional() {
         let tokens = Tokenizer.vocabulary("ambient memory privacy recall")
         let base = TasteModel()

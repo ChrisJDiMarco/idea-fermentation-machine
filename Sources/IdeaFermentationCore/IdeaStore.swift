@@ -47,7 +47,8 @@ public final class IdeaStore {
             feasibility REAL NOT NULL,
             evidence REAL NOT NULL,
             personal_resonance REAL NOT NULL,
-            timing REAL NOT NULL
+            timing REAL NOT NULL,
+            derived_from_never_send INTEGER NOT NULL DEFAULT 0
         )
         """)
         try db.execute("""
@@ -172,6 +173,25 @@ public final class IdeaStore {
         )
         """)
         try db.execute("""
+        CREATE TABLE IF NOT EXISTS forecast_logs (
+            id TEXT PRIMARY KEY,
+            idea_id TEXT NOT NULL,
+            predicted_at REAL NOT NULL,
+            ripeness REAL NOT NULL,
+            probability REAL NOT NULL,
+            novelty REAL NOT NULL,
+            clarity REAL NOT NULL,
+            evidence REAL NOT NULL,
+            resonance REAL NOT NULL,
+            feasibility REAL NOT NULL,
+            timing REAL NOT NULL,
+            source TEXT NOT NULL,
+            resolved_at REAL,
+            actual_positive INTEGER,
+            outcome_result TEXT
+        )
+        """)
+        try db.execute("""
         CREATE TABLE IF NOT EXISTS llm_usage_records (
             id TEXT PRIMARY KEY,
             provider TEXT NOT NULL,
@@ -218,6 +238,22 @@ public final class IdeaStore {
             }
             try saveSetting("embedding_dim", LocalEmbeddings.dimensions)
         }
+        try backfillPrivacyTaint()
+    }
+
+    /// One-time backfill of the privacy taint flag from existing idea↔source links, so
+    /// ideas captured before the flag existed are still protected. Gated by a dedicated
+    /// app_settings key (NOT user_version, which the embedding gate owns) so it runs
+    /// exactly once and never races the re-embed.
+    private func backfillPrivacyTaint() throws {
+        guard try loadSetting("privacy_taint_backfilled", defaultValue: false) == false else { return }
+        let derived = neverSendDerivedIdeaIDs(ideas: try listIdeas(), sources: try listSources())
+        try db.transaction {
+            for id in derived {
+                try db.execute("UPDATE idea_seeds SET derived_from_never_send = 1 WHERE id = ?", [.text(id.uuidString)])
+            }
+            try saveSetting("privacy_taint_backfilled", true)
+        }
     }
 
     /// Secondary indices for the hot lookups (job scheduling, per-idea children,
@@ -234,6 +270,7 @@ public final class IdeaStore {
             "CREATE INDEX IF NOT EXISTS idx_critiques_idea ON idea_critiques(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_briefs_idea ON prototype_briefs(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_outcomes_idea ON build_outcomes(idea_id)",
+            "CREATE INDEX IF NOT EXISTS idx_forecast_idea ON forecast_logs(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_logs_job ON agent_run_logs(job_id)",
             "CREATE INDEX IF NOT EXISTS idx_usage_created ON llm_usage_records(created_at)"
         ]
@@ -261,6 +298,7 @@ public final class IdeaStore {
     }
 
     private func migrateV2Columns() throws {
+        try addColumnIfMissing(table: "idea_seeds", column: "derived_from_never_send", definition: "INTEGER NOT NULL DEFAULT 0")
         try addColumnIfMissing(table: "source_items", column: "metadata", definition: "TEXT NOT NULL DEFAULT '{}'")
         try addColumnIfMissing(table: "fermentation_jobs", column: "scheduled_at", definition: "REAL")
         try addColumnIfMissing(table: "fermentation_jobs", column: "completed_at", definition: "REAL")
@@ -305,7 +343,7 @@ public final class IdeaStore {
         // leave the search index pointing at stale or missing text.
         try db.transaction {
             try db.execute("""
-            INSERT INTO idea_seeds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO idea_seeds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 body = excluded.body,
@@ -321,7 +359,8 @@ public final class IdeaStore {
                 feasibility = excluded.feasibility,
                 evidence = excluded.evidence,
                 personal_resonance = excluded.personal_resonance,
-                timing = excluded.timing
+                timing = excluded.timing,
+                derived_from_never_send = derived_from_never_send | excluded.derived_from_never_send
             """, try ideaBindings(idea))
             try db.execute("DELETE FROM idea_search WHERE id = ?", [.text(idea.id.uuidString)])
             try db.execute("INSERT INTO idea_search(id, title, body, tags) VALUES (?, ?, ?, ?)", [
@@ -406,6 +445,7 @@ public final class IdeaStore {
             try db.execute("DELETE FROM idea_critiques WHERE idea_id = ?", [.text(key)])
             try db.execute("DELETE FROM prototype_briefs WHERE idea_id = ?", [.text(key)])
             try db.execute("DELETE FROM build_outcomes WHERE idea_id = ?", [.text(key)])
+            try db.execute("DELETE FROM forecast_logs WHERE idea_id = ?", [.text(key)])
         }
     }
 
@@ -812,6 +852,55 @@ public final class IdeaStore {
         try buildOutcomes().first { $0.ideaID == ideaID }
     }
 
+    /// Upsert by id, so resolving a forecast updates the same row rather than inserting.
+    public func saveForecastLog(_ log: ForecastLog) throws {
+        try db.execute("INSERT OR REPLACE INTO forecast_logs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", [
+            .text(log.id.uuidString),
+            .text(log.ideaID.uuidString),
+            .double(log.predictedAt.timeIntervalSince1970),
+            .double(log.ripenessAtPrediction),
+            .double(log.predictedProbability),
+            .double(log.novelty),
+            .double(log.clarity),
+            .double(log.evidence),
+            .double(log.resonance),
+            .double(log.feasibility),
+            .double(log.timing),
+            .text(log.source),
+            log.resolvedAt.map { .double($0.timeIntervalSince1970) } ?? .null,
+            log.actualPositive.map { .int($0 ? 1 : 0) } ?? .null,
+            log.outcomeResult.map { .text($0.rawValue) } ?? .null
+        ])
+    }
+
+    public func forecastLogs() throws -> [ForecastLog] {
+        try db.query("SELECT * FROM forecast_logs ORDER BY predicted_at DESC").map { row in
+            ForecastLog(
+                id: UUID(uuidString: row.required("id"))!,
+                ideaID: UUID(uuidString: row.required("idea_id"))!,
+                predictedAt: Date(timeIntervalSince1970: row.double("predicted_at")),
+                ripenessAtPrediction: row.double("ripeness"),
+                predictedProbability: row.double("probability"),
+                novelty: row.double("novelty"),
+                clarity: row.double("clarity"),
+                evidence: row.double("evidence"),
+                resonance: row.double("resonance"),
+                feasibility: row.double("feasibility"),
+                timing: row.double("timing"),
+                source: row.required("source"),
+                resolvedAt: (row["resolved_at"] ?? nil).map { Date(timeIntervalSince1970: Double($0) ?? 0) },
+                actualPositive: (row["actual_positive"] ?? nil).map { Int($0) == 1 },
+                outcomeResult: (row["outcome_result"] ?? nil).flatMap { BuildResult(rawValue: $0) }
+            )
+        }
+    }
+
+    /// The most recent forecast for an idea (resolved or not) — the one a build outcome
+    /// resolves, including on re-record.
+    public func latestForecast(for ideaID: UUID) throws -> ForecastLog? {
+        try forecastLogs().first { $0.ideaID == ideaID }
+    }
+
     public func buildOutcomes() throws -> [BuildOutcome] {
         try db.query("SELECT * FROM build_outcomes ORDER BY created_at DESC").map { row in
             BuildOutcome(
@@ -944,6 +1033,7 @@ public final class IdeaStore {
                 "llm_cache",
                 "llm_usage_records",
                 "build_outcomes",
+                "forecast_logs",
                 "prototype_briefs",
                 "idea_critiques",
                 "ripeness_scores",
@@ -1088,7 +1178,8 @@ public final class IdeaStore {
             .double(idea.feasibility),
             .double(idea.evidence),
             .double(idea.personalResonance),
-            .double(idea.timing)
+            .double(idea.timing),
+            .int(idea.derivedFromNeverSend ? 1 : 0)
         ]
     }
 
@@ -1150,7 +1241,8 @@ public final class IdeaStore {
             feasibility: row.double("feasibility"),
             evidence: row.double("evidence"),
             personalResonance: row.double("personal_resonance"),
-            timing: row.double("timing")
+            timing: row.double("timing"),
+            derivedFromNeverSend: (row["derived_from_never_send"] ?? nil).map { Int($0) == 1 } ?? false
         )
     }
 
