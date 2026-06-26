@@ -353,51 +353,386 @@ struct BrowserConnectorCard: View {
     }
 }
 
+/// The Mind's internal sections — a small, friendly tab set instead of one long scroll.
+enum MindSection: String, CaseIterable, Identifiable {
+    case overview, web, history, tuning, settings
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .overview: return "Overview"
+        case .web: return "The Web"
+        case .history: return "History"
+        case .tuning: return "Tuning"
+        case .settings: return "Settings"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .overview: return "sparkles"
+        case .web: return "point.3.connected.trianglepath.dotted"
+        case .history: return "clock.arrow.circlepath"
+        case .tuning: return "slider.horizontal.3"
+        case .settings: return "gearshape"
+        }
+    }
+}
+
 struct AutonomyPage: View {
     @ObservedObject var model: ShellViewModel
+    @State private var section: MindSection = .overview
 
     var body: some View {
-        PageScaffold(title: "The Mind", subtitle: "An autonomous mind that thinks for itself — reasoning across your ideas, connecting them into a web, generating new ones, and checking its own thinking.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
-            VStack(alignment: .leading, spacing: IFMSpacing.xl) {
-                AutomationHeroCard(model: model)
-
-                automationGroup(title: "How it's thinking", subtitle: "Its latest train of thought — and how it judged its own reasoning.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
-                    StreamOfThoughtCard(model: model)
-                    ThoughtWebCard(model: model)
+        PageScaffold(title: "The Mind", subtitle: "An autonomous mind that thinks across your ideas — and checks its own thinking.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
+            VStack(alignment: .leading, spacing: IFMSpacing.lg) {
+                MindNav(selection: $section)
+                Group {
+                    switch section {
+                    case .overview: MindOverview(model: model, go: { section = $0 })
+                    case .web: MindWebSection(model: model)
+                    case .history: MindHistory(model: model)
+                    case .tuning: MindTuning(model: model)
+                    case .settings: MindSettings(model: model)
+                    }
                 }
-
-                automationGroup(title: "What it pays attention to", subtitle: "The lanes it researches and the candidates it brings back.", symbol: "scope", accent: IFMTheme.green) {
-                    ScoutMissionsCard(model: model)
-                    ScoutFocusCard(model: model)
-                    AutomationProfileCard(model: model)
-                }
-
-                automationGroup(title: "What it's learned about you", subtitle: "Tuned from your real decisions — not hand-edited.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
-                    LearnedTasteCard(model: model)
-                    RipenessCalibrationCard(model: model)
-                    ForecastAccuracyCard(model: model)
-                }
-
-                automationGroup(title: "Schedule & spend", subtitle: "Guardrails for unattended runs.", symbol: "gauge.with.dots.needle.bottom.50percent", accent: IFMTheme.orange) {
-                    GuardrailsCard(model: model)
-                }
-
-                automationGroup(title: "Privacy", subtitle: "What can leave this Mac.", symbol: "lock.shield", accent: IFMTheme.slate) {
-                    AutomationPrivacyCard(model: model)
-                }
+                .id(section) // distinct identity per tab so the cross-fade actually fires
+                .transition(.opacity)
             }
         } rail: {
             AutonomyRail(model: model)
         }
     }
+}
 
-    @ViewBuilder
-    private func automationGroup<Content: View>(title: String, subtitle: String, symbol: String, accent: Color, @ViewBuilder content: () -> Content) -> some View {
+/// The pill-style segmented nav at the top of the Mind page.
+struct MindNav: View {
+    @Binding var selection: MindSection
+
+    var body: some View {
+        HStack(spacing: 0) {
+            HStack(spacing: 4) {
+                ForEach(MindSection.allCases) { section in
+                    let active = selection == section
+                    Button {
+                        withAnimation(IFMMotion.standard) { selection = section }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: section.symbol).font(.system(size: 12, weight: .semibold))
+                            Text(section.title).font(.system(size: 13, weight: .semibold))
+                        }
+                        .padding(.horizontal, 13).padding(.vertical, 8)
+                        .foregroundStyle(active ? Color.white : IFMTheme.muted)
+                        .background(active ? IFMTheme.purple : Color.clear)
+                        .clipShape(Capsule())
+                        .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(section.title)
+                }
+            }
+            .padding(5)
+            .background(IFMTheme.panel.opacity(0.7))
+            .clipShape(Capsule())
+            .overlay { Capsule().stroke(IFMTheme.border.opacity(0.6)) }
+            .fixedSize()
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+/// A titled section group, reused across the Tuning and Settings tabs.
+struct MindGroup<Content: View>: View {
+    let title: String
+    let subtitle: String
+    let symbol: String
+    let accent: Color
+    @ViewBuilder var content: Content
+
+    init(title: String, subtitle: String, symbol: String, accent: Color, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.subtitle = subtitle
+        self.symbol = symbol
+        self.accent = accent
+        self.content = content()
+    }
+
+    var body: some View {
         VStack(alignment: .leading, spacing: IFMSpacing.sm) {
             SectionHeader(title, subtitle: subtitle, symbol: symbol, accent: accent)
                 .padding(.horizontal, 2)
-            content()
+            content
         }
+    }
+}
+
+// MARK: - Overview tab (the friendly landing)
+
+struct MindOverview: View {
+    @ObservedObject var model: ShellViewModel
+    var go: (MindSection) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.lg) {
+            AutomationHeroCard(model: model)
+            MindLatestThoughtCard(model: model, onSeeAll: { go(.history) })
+            MindWebPeekCard(model: model, onExplore: { go(.web) })
+        }
+    }
+}
+
+/// A plain-language summary of the most recent cycle, with a link into the full history.
+struct MindLatestThoughtCard: View {
+    @ObservedObject var model: ShellViewModel
+    var onSeeAll: () -> Void
+
+    var body: some View {
+        SectionCard("Its latest thought", symbol: "brain.head.profile", accent: IFMTheme.purple, trailing: {
+            if let session = model.latestThinkingSession {
+                Pill(text: session.source, color: session.isCloud ? IFMTheme.purple : IFMTheme.slate)
+            }
+        }) {
+            if let session = model.latestThinkingSession {
+                VStack(alignment: .leading, spacing: IFMSpacing.md) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("THINKING ABOUT").font(.ifmEyebrow).foregroundStyle(IFMTheme.muted)
+                        Text(session.focus).font(.system(size: 17, weight: .semibold))
+                            .fixedSize(horizontal: false, vertical: true)
+                        if !session.analysis.isEmpty {
+                            Text(session.analysis).font(.ifmBody).foregroundStyle(IFMTheme.text)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    HStack(spacing: IFMSpacing.md) {
+                        ConfidenceGauge(value: session.reflection.confidence)
+                        if !session.generatedIdeaIDs.isEmpty {
+                            Label("\(session.generatedIdeaIDs.count) new idea\(session.generatedIdeaIDs.count == 1 ? "" : "s")", systemImage: "lightbulb.fill")
+                                .font(.ifmCaption).foregroundStyle(IFMTheme.green)
+                        }
+                        Spacer()
+                    }
+                    if !session.reflection.weakestLink.isEmpty {
+                        overviewLine("Least sure about", session.reflection.weakestLink, "exclamationmark.triangle", IFMTheme.orange)
+                    }
+                    if !session.reflection.nextToExplore.isEmpty {
+                        overviewLine("Wants to explore next", session.reflection.nextToExplore, "arrow.forward.circle", IFMTheme.blue)
+                    }
+                    Button(action: onSeeAll) {
+                        Label("See the full train of thought", systemImage: "arrow.right").font(.ifmCaption)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(IFMTheme.purple)
+                }
+            } else {
+                MindEmptyState(
+                    title: "The mind hasn't thought yet.",
+                    message: "Press **Think Now** above to run a cycle — or turn the Mind on and it thinks on its own every ~30 minutes."
+                )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func overviewLine(_ label: String, _ value: String, _ symbol: String, _ color: Color) -> some View {
+        HStack(alignment: .top, spacing: 7) {
+            Image(systemName: symbol).font(.system(size: 11)).foregroundStyle(color).frame(width: 16)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(label).font(.system(size: 10, weight: .heavy)).foregroundStyle(IFMTheme.muted)
+                Text(value).font(.ifmCaption).foregroundStyle(IFMTheme.text).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
+/// A compact preview of the web, linking into the full Web tab.
+struct MindWebPeekCard: View {
+    @ObservedObject var model: ShellViewModel
+    var onExplore: () -> Void
+
+    private var nodes: [Thought] {
+        guard let session = model.latestThinkingSession else { return [] }
+        return model.mindThoughts.filter { $0.sessionID == session.id }
+    }
+    private var edges: [ThoughtEdge] {
+        guard let session = model.latestThinkingSession else { return [] }
+        return model.mindEdges.filter { $0.sessionID == session.id }
+    }
+
+    var body: some View {
+        SectionCard("The web", subtitle: "How its thoughts connect.", symbol: "point.3.connected.trianglepath.dotted", accent: IFMTheme.blue, trailing: {
+            Button(action: onExplore) { Label("Explore", systemImage: "arrow.up.right").font(.ifmCaption) }
+                .buttonStyle(.plain).foregroundStyle(IFMTheme.blue)
+        }) {
+            if nodes.count < 2 {
+                MindEmptyState(
+                    title: model.thoughtCount == 0 ? "No web yet." : "The web is still sparse.",
+                    message: model.thoughtCount == 0 ? "When the mind thinks, the connections it draws appear here and grow each cycle." : "Run another cycle to grow it."
+                )
+            } else {
+                VStack(alignment: .leading, spacing: IFMSpacing.sm) {
+                    ThoughtWebGraph(thoughts: nodes, edges: edges, height: 230, maxNodes: 5)
+                    Text("\(model.thoughtCount) thoughts · \(model.connectionCount) connections across all cycles")
+                        .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Web tab
+
+struct MindWebSection: View {
+    @ObservedObject var model: ShellViewModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.md) {
+            SectionHeader("The thought-web", subtitle: "Its latest cycle as nodes and typed connections — the web grows every time it thinks.", symbol: "point.3.connected.trianglepath.dotted", accent: IFMTheme.blue)
+                .padding(.horizontal, 2)
+            ThoughtWebCard(model: model)
+        }
+    }
+}
+
+// MARK: - History tab
+
+struct MindHistory: View {
+    @ObservedObject var model: ShellViewModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.md) {
+            SectionHeader("Train of thought", subtitle: "Every cycle the mind has run — tap any one to see how it reasoned.", symbol: "clock.arrow.circlepath", accent: IFMTheme.purple)
+                .padding(.horizontal, 2)
+            if model.thinkingSessions.isEmpty {
+                IFMCard {
+                    MindEmptyState(title: "No thinking yet.", message: "Press **Think Now** on the Overview to run the first cycle.")
+                }
+            } else {
+                ForEach(model.thinkingSessions) { session in
+                    MindSessionRow(model: model, session: session)
+                }
+            }
+        }
+    }
+}
+
+/// One past cycle — collapsed to a headline, expandable to its full reasoning + self-critique.
+struct MindSessionRow: View {
+    @ObservedObject var model: ShellViewModel
+    let session: ThinkingSession
+    @State private var expanded = false
+
+    private static let relative: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .abbreviated
+        return formatter
+    }()
+
+    var body: some View {
+        IFMCard(padding: IFMSpacing.md) {
+            VStack(alignment: .leading, spacing: expanded ? IFMSpacing.md : 0) {
+                Button {
+                    withAnimation(IFMMotion.standard) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: IFMSpacing.sm) {
+                        SymbolBadge(symbol: session.isCloud ? "brain.head.profile" : "cpu", color: session.isCloud ? IFMTheme.purple : IFMTheme.slate, size: 34)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(session.focus).font(.system(size: 14, weight: .semibold)).lineLimit(1)
+                            Text(subtitle).font(.ifmCaption).foregroundStyle(IFMTheme.muted).lineLimit(1)
+                        }
+                        Spacer(minLength: 8)
+                        ConfidenceGauge(value: session.reflection.confidence)
+                        Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 11, weight: .bold)).foregroundStyle(IFMTheme.muted)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                if expanded {
+                    Divider()
+                    if !session.analysis.isEmpty {
+                        Text(session.analysis).font(.ifmBody).foregroundStyle(IFMTheme.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    let thoughts = model.mindThoughts.filter { $0.sessionID == session.id }
+                    if !thoughts.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            ForEach(thoughts) { ThoughtRow(thought: $0) }
+                        }
+                    }
+                    ReflectionView(reflection: session.reflection)
+                }
+            }
+        }
+    }
+
+    private var subtitle: String {
+        let when = Self.relative.localizedString(for: session.startedAt, relativeTo: Date())
+        let ideas = session.generatedIdeaIDs.count
+        let ideaText = ideas == 0 ? "no new ideas" : "\(ideas) new idea\(ideas == 1 ? "" : "s")"
+        return "\(when) · \(ideaText) · \(session.source)"
+    }
+}
+
+// MARK: - Tuning tab
+
+struct MindTuning: View {
+    @ObservedObject var model: ShellViewModel
+    var body: some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.xl) {
+            MindGroup(title: "What it watches", subtitle: "The lanes it researches and the candidates it brings back.", symbol: "scope", accent: IFMTheme.green) {
+                ScoutMissionsCard(model: model)
+                ScoutFocusCard(model: model)
+                AutomationProfileCard(model: model)
+            }
+            MindGroup(title: "What it's learned about you", subtitle: "Tuned from your real decisions — not hand-edited.", symbol: "brain.head.profile", accent: IFMTheme.purple) {
+                LearnedTasteCard(model: model)
+                RipenessCalibrationCard(model: model)
+                ForecastAccuracyCard(model: model)
+            }
+        }
+    }
+}
+
+// MARK: - Settings tab
+
+struct MindSettings: View {
+    @ObservedObject var model: ShellViewModel
+    @State private var confirmingReset = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: IFMSpacing.xl) {
+            MindGroup(title: "Schedule & spend", subtitle: "Guardrails for unattended thinking.", symbol: "gauge.with.dots.needle.bottom.50percent", accent: IFMTheme.orange) {
+                GuardrailsCard(model: model)
+            }
+            MindGroup(title: "Privacy", subtitle: "What can leave this Mac.", symbol: "lock.shield", accent: IFMTheme.slate) {
+                AutomationPrivacyCard(model: model)
+            }
+            MindGroup(title: "Reset", subtitle: "Start the mind's memory fresh.", symbol: "trash", accent: IFMTheme.red) {
+                SectionCard("Clear the mind", subtitle: "Deletes all thoughts, connections, and thinking history. Your ideas are untouched.", symbol: "trash", accent: IFMTheme.red) {
+                    Button(role: .destructive) { confirmingReset = true } label: {
+                        Label("Clear the mind's memory", systemImage: "trash")
+                    }
+                    .buttonStyle(.bordered).tint(IFMTheme.red)
+                }
+            }
+        }
+        .alert("Clear the mind's memory?", isPresented: $confirmingReset) {
+            Button("Clear", role: .destructive) { model.clearMind() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This deletes every thought, connection, and thinking session. Your ideas are not affected.")
+        }
+    }
+}
+
+/// A small, friendly empty-state block used across the Mind sections.
+struct MindEmptyState: View {
+    let title: String
+    let message: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).font(.ifmBody.weight(.semibold)).foregroundStyle(IFMTheme.text)
+            Text(.init(message)).font(.ifmCaption).foregroundStyle(IFMTheme.muted)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 6)
     }
 }
 
@@ -507,59 +842,7 @@ struct AutomationHeroCard: View {
     }
 }
 
-// MARK: - The Mind's cycle
-
-/// The latest cognitive cycle as a readable chain, ending in the metacognition — the mind's
-/// critique of its own reasoning.
-struct StreamOfThoughtCard: View {
-    @ObservedObject var model: ShellViewModel
-
-    var body: some View {
-        SectionCard("Latest train of thought", subtitle: "What it reasoned through last cycle.", symbol: "text.append", accent: IFMTheme.purple, trailing: {
-            if let session = model.latestThinkingSession {
-                Pill(text: session.source, color: session.isCloud ? IFMTheme.purple : IFMTheme.slate)
-            }
-        }) {
-            if let session = model.latestThinkingSession {
-                VStack(alignment: .leading, spacing: IFMSpacing.md) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("THINKING ABOUT").font(.ifmEyebrow).foregroundStyle(IFMTheme.muted)
-                        Text(session.focus).font(.system(size: 15, weight: .semibold))
-                    }
-                    if !session.analysis.isEmpty {
-                        Text(session.analysis).font(.ifmBody).foregroundStyle(IFMTheme.text)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    let sessionThoughts = model.mindThoughts.filter { $0.sessionID == session.id }
-                    if !sessionThoughts.isEmpty {
-                        VStack(alignment: .leading, spacing: 6) {
-                            ForEach(sessionThoughts) { ThoughtRow(thought: $0) }
-                        }
-                    }
-                    if !session.generatedIdeaIDs.isEmpty {
-                        Button { model.selectedPage = .inbox } label: {
-                            Label("Generated \(session.generatedIdeaIDs.count) new idea\(session.generatedIdeaIDs.count == 1 ? "" : "s") — see your Inbox", systemImage: "lightbulb.fill")
-                                .font(.ifmCaption)
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(IFMTheme.green)
-                    }
-                    Divider()
-                    ReflectionView(reflection: session.reflection)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: IFMSpacing.sm) {
-                    Text("The mind hasn't thought yet.")
-                        .font(.ifmBody).foregroundStyle(IFMTheme.muted)
-                    Text("Press **Think Now** above to run a cycle, or turn the Mind on to let it think every ~30 minutes.")
-                        .font(.ifmCaption).foregroundStyle(IFMTheme.muted)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, 6)
-            }
-        }
-    }
-}
+// MARK: - The Mind's cycle (shared building blocks)
 
 private struct ThoughtRow: View {
     let thought: Thought
@@ -695,12 +978,23 @@ struct ThoughtWebCard: View {
 private struct ThoughtWebGraph: View {
     let thoughts: [Thought]
     let edges: [ThoughtEdge]
+    var height: CGFloat = 340
+    /// Cap the nodes drawn on the circle so chips stay readable; the full set is always
+    /// listed beneath the graph, so capping the *visual* loses no information.
+    var maxNodes: Int = 8
+
+    private var shown: [Thought] { Array(thoughts.prefix(maxNodes)) }
+    private var shownEdges: [ThoughtEdge] {
+        let ids = Set(shown.map(\.id))
+        return edges.filter { ids.contains($0.fromThoughtID) && ids.contains($0.toThoughtID) }
+    }
 
     private func positions(in size: CGSize) -> [CGPoint] {
-        let n = thoughts.count
+        let n = shown.count
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         guard n > 1 else { return [center] }
-        let radius = min(size.width, size.height) / 2 - 58
+        // Keep the circle clear of the chip's own footprint so nodes never hug the frame edge.
+        let radius = min(size.width, size.height) / 2 - 52
         return (0..<n).map { i in
             let angle = (Double(i) / Double(n)) * 2 * .pi - .pi / 2
             return CGPoint(x: center.x + radius * cos(angle), y: center.y + radius * sin(angle))
@@ -708,26 +1002,33 @@ private struct ThoughtWebGraph: View {
     }
 
     var body: some View {
-        GeometryReader { geo in
-            let pos = positions(in: geo.size)
-            let index = Dictionary(thoughts.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
-            ZStack {
-                Canvas { context, _ in
-                    for edge in edges {
-                        guard let i = index[edge.fromThoughtID], let j = index[edge.toThoughtID], i < pos.count, j < pos.count else { continue }
-                        var path = Path()
-                        path.move(to: pos[i])
-                        path.addLine(to: pos[j])
-                        context.stroke(path, with: .color(thoughtEdgeColor(edge.type).opacity(0.55)),
-                                       style: StrokeStyle(lineWidth: 1.2 + edge.strength * 2.2, lineCap: .round))
+        VStack(spacing: 6) {
+            GeometryReader { geo in
+                let pos = positions(in: geo.size)
+                let index = Dictionary(shown.enumerated().map { ($1.id, $0) }, uniquingKeysWith: { a, _ in a })
+                ZStack {
+                    Canvas { context, _ in
+                        for edge in shownEdges {
+                            guard let i = index[edge.fromThoughtID], let j = index[edge.toThoughtID], i < pos.count, j < pos.count else { continue }
+                            var path = Path()
+                            path.move(to: pos[i])
+                            path.addLine(to: pos[j])
+                            context.stroke(path, with: .color(thoughtEdgeColor(edge.type).opacity(0.55)),
+                                           style: StrokeStyle(lineWidth: 1.2 + edge.strength * 2.2, lineCap: .round))
+                        }
+                    }
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { i, thought in
+                        if i < pos.count { NodeChip(thought: thought).position(pos[i]) }
                     }
                 }
-                ForEach(Array(thoughts.enumerated()), id: \.element.id) { i, thought in
-                    if i < pos.count { NodeChip(thought: thought).position(pos[i]) }
-                }
+            }
+            .frame(height: height)
+            if thoughts.count > shown.count {
+                Text("+\(thoughts.count - shown.count) more thought\(thoughts.count - shown.count == 1 ? "" : "s") below")
+                    .font(.system(size: 10)).foregroundStyle(IFMTheme.muted)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
             }
         }
-        .frame(height: 320)
     }
 }
 
@@ -741,10 +1042,10 @@ private struct NodeChip: View {
         .font(.system(size: 10, weight: .semibold))
         .foregroundStyle(IFMTheme.text)
         .padding(.horizontal, 8).padding(.vertical, 5)
-        .frame(maxWidth: 132)
-        .background(thoughtKindColor(thought.kind).opacity(0.14))
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(thoughtKindColor(thought.kind).opacity(0.45)) }
+        .frame(maxWidth: 92)
+        .background(thoughtKindColor(thought.kind).opacity(0.16))
+        .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: IFMRadius.md).stroke(thoughtKindColor(thought.kind).opacity(0.45)) }
         .help(thought.rationale.isEmpty ? thought.content : "\(thought.content)\n\n\(thought.rationale)")
     }
 }
@@ -1340,11 +1641,13 @@ struct AutonomyRail: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: IFMSpacing.md) {
-            Text("Agent Loop").font(.ifmSectionTitle)
-            // Mode lives on the hero now; the rail carries supporting detail.
-            SectionCard("Activity", symbol: "waveform.path.ecg", accent: IFMTheme.green, padding: IFMSpacing.sm) {
+            Text("The Mind").font(.ifmSectionTitle)
+            // Status lives on the Overview hero; the rail carries the at-a-glance numbers.
+            SectionCard("State", symbol: "waveform.path.ecg", accent: IFMTheme.purple, padding: IFMSpacing.sm) {
+                StatusRow(title: "Mode", isGood: model.autonomyProfile.isEnabled, goodText: "On", badText: "Off")
+                StatRow(title: "Thoughts", value: "\(model.thoughtCount)", accent: IFMTheme.purple)
+                StatRow(title: "Connections", value: "\(model.connectionCount)", accent: IFMTheme.blue)
                 StatRow(title: "Active missions", value: "\(model.scoutMissions.filter(\.isEnabled).count)", accent: IFMTheme.green)
-                StatRow(title: "Scout runs", value: "\(model.logs.filter { $0.agentName == "Scout Agent" }.count)", accent: IFMTheme.blue)
                 StatRow(title: "Spent today", value: String(format: "$%.2f", model.spentTodayUSD), accent: IFMTheme.text)
             }
             SectionCard("Search Stack", symbol: "magnifyingglass", accent: IFMTheme.slate, padding: IFMSpacing.sm) {
@@ -1353,7 +1656,7 @@ struct AutonomyRail: View {
                 StatRow(title: "Public fallback", value: "Always", accent: IFMTheme.green)
             }
             SectionCard("What it does", symbol: "list.bullet.rectangle", accent: IFMTheme.slate, padding: IFMSpacing.sm) {
-                Text("Find signals, save sources, create a linked candidate idea, then queue a local ripeness pass.")
+                Text("Reasons across your ideas, connects them into a web, generates new ones, then critiques its own thinking — on its own, within your caps.")
                     .font(.ifmCaption)
                     .foregroundStyle(IFMTheme.muted)
                     .fixedSize(horizontal: false, vertical: true)
