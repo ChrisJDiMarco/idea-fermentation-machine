@@ -398,6 +398,50 @@ struct ShellViewModelTests {
         #expect(try store.idea(id: idea.id).status != .ready)
     }
 
+    @Test func mergingFoldsSecondaryIntoPrimaryAndInheritsTaint() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        var primary = try store.createIdea(title: "Ambient capture", body: "Primary body.", tags: ["capture"])
+        primary.ripeness = 60
+        try store.upsertIdea(primary)
+        var secondary = try store.createIdea(title: "Frictionless capture", body: "SECONDARY-BODY.", tags: ["notes"])
+        secondary.ripeness = 30
+        secondary.derivedFromNeverSend = true
+        try store.upsertIdea(secondary)
+        model.reload()
+
+        model.mergeIdea(secondary, into: primary)
+
+        let ideas = try store.listIdeas()
+        #expect(ideas.count == 1)                                  // secondary removed
+        let merged = try #require(ideas.first)
+        #expect(merged.id == primary.id)                           // survivor is the primary
+        #expect(merged.body.contains("SECONDARY-BODY"))            // secondary content folded in
+        #expect(Set(merged.manualTags) == Set(["capture", "notes"])) // tags unioned
+        #expect(merged.derivedFromNeverSend)                       // taint inherited from secondary
+        #expect(model.errorMessage?.contains("Merged") == true)
+    }
+
+    @Test func mergeMigratesThirdPartyConnectionsToSurvivor() throws {
+        let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
+        let model = ShellViewModel(store: store, keyLookup: { _ in nil })
+        var primary = try store.createIdea(title: "Primary", body: "p", tags: ["a"])
+        primary.ripeness = 60
+        try store.upsertIdea(primary)
+        let secondary = try store.createIdea(title: "Secondary", body: "s", tags: ["b"])
+        let third = try store.createIdea(title: "Third", body: "t", tags: ["c"])
+        // Third idea is connected to the secondary.
+        try store.saveConnection(IdeaConnection(fromID: third.id, toID: secondary.id, explanation: "related", confidence: 0.7))
+        model.reload()
+
+        model.mergeIdea(secondary, into: primary)
+
+        let connections = try store.connections()
+        // The third's edge is re-pointed to the survivor, not destroyed.
+        #expect(connections.contains { ($0.fromID == third.id && $0.toID == primary.id) || ($0.fromID == primary.id && $0.toID == third.id) })
+        #expect(!connections.contains { $0.fromID == secondary.id || $0.toID == secondary.id })
+    }
+
     @Test func readyIdeasGetOneForecastThatResolvesOnOutcome() throws {
         let store = try IdeaStore(databaseURL: appTempFolder().appendingPathComponent("ideas.sqlite"))
         let model = ShellViewModel(store: store, keyLookup: { _ in nil })

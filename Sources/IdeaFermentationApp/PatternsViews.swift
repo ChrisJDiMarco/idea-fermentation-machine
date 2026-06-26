@@ -824,6 +824,7 @@ private struct PortfolioBuildNextHero: View {
 private struct PortfolioInsightCard: View {
     var insight: PortfolioInsight
     @ObservedObject var model: ShellViewModel
+    @State private var confirmingMerge = false
 
     var body: some View {
         let accent = insightColor(insight.kind)
@@ -844,12 +845,45 @@ private struct PortfolioInsightCard: View {
                 .foregroundStyle(IFMTheme.muted)
                 .fixedSize(horizontal: false, vertical: true)
             PortfolioInsightChips(insight: insight, model: model)
+
+            // Executable: a merge insight can be acted on, not just read.
+            if insight.kind == .merge, let group = mergeGroup {
+                Button {
+                    confirmingMerge = true
+                } label: {
+                    Label("Merge \(group.secondaries.count + 1) into one", systemImage: "arrow.triangle.merge")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(IFMTheme.purple)
+                .padding(.top, 2)
+            }
         }
         .padding(12)
         .frame(maxWidth: .infinity, minHeight: 108, alignment: .leading)
         .background(IFMTheme.panelStrong)
         .clipShape(RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous))
         .overlay { RoundedRectangle(cornerRadius: IFMRadius.md, style: .continuous).stroke(IFMTheme.border.opacity(0.8)) }
+        .confirmationDialog("Merge these ideas?", isPresented: $confirmingMerge, titleVisibility: .visible) {
+            if let group = mergeGroup {
+                Button("Merge into “\(group.primary.title)”") { model.mergeIdeas(group.secondaries, into: group.primary) }
+                Button("Cancel", role: .cancel) {}
+            }
+        } message: {
+            if let group = mergeGroup {
+                Text("\(group.secondaries.count + 1) ideas fold into “\(group.primary.title)” — their bodies, tags, sources, and connections combine. The folded ideas (and any critique or brief on them) are removed. This can't be undone.")
+            }
+        }
+    }
+
+    /// The ideas to merge: the most-developed survivor plus the rest folded in. Resolved
+    /// against the full corpus and excluding archived ideas.
+    private var mergeGroup: (primary: IdeaSeed, secondaries: [IdeaSeed])? {
+        let resolved = model.mergeCandidates(for: insight)
+        guard resolved.count >= 2 else { return nil }
+        let sorted = resolved.sorted { $0.ripeness > $1.ripeness }
+        return (sorted[0], Array(sorted.dropFirst()))
     }
 }
 

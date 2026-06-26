@@ -664,10 +664,13 @@ struct FreshnessDots: View {
     var score: Double
 
     var body: some View {
-        HStack(spacing: 6) {
+        // 5 dots over a 0–100 score: divide by 20 so a full 100 lights all five (the old
+        // /25 capped at four even when "Ripe").
+        let filled = Int((score / 20).rounded(.toNearestOrAwayFromZero))
+        return HStack(spacing: 6) {
             ForEach(0..<5, id: \.self) { index in
                 Circle()
-                    .fill(Double(index) < score / 25 ? IFMTheme.green : IFMTheme.scrim.opacity(0.08))
+                    .fill(index < filled ? IFMTheme.green : IFMTheme.scrim.opacity(0.08))
                     .frame(width: 8, height: 8)
             }
         }
@@ -1425,7 +1428,7 @@ struct ArchiveTable: View {
             return ("Paused", "pause.circle", IFMTheme.orange)
         }
         if idea.sourceIDs.count > 1 {
-            return ("Merged", "arrow.triangle.merge", IFMTheme.blue)
+            return ("Well-sourced", "doc.on.doc", IFMTheme.blue)
         }
         if !idea.manualTags.isEmpty {
             return ("Learned", "book.closed", IFMTheme.purple)

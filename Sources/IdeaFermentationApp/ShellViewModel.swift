@@ -223,6 +223,10 @@ public final class ShellViewModel: ObservableObject {
     @Published var conceptTaste = TasteManifold()
     /// How well the app's own Ready predictions have held up against real outcomes.
     @Published var forecastAccuracy = ForecastAccuracy()
+    /// Full-corpus status counts + source count for the sidebar nav, so an active search
+    /// can't make the global nav badges drop to the filtered subset.
+    @Published var statusCounts: [IdeaStatus: Int] = [:]
+    @Published var totalSourceCount = 0
 
     public var pendingCloudPreview: PendingCloudPreview? {
         jobs.lazy
@@ -278,13 +282,19 @@ public final class ShellViewModel: ObservableObject {
 
     public func reload() {
         do {
+            // Fetch the full corpus ONCE and reuse it for the manifold, forecasts, counts,
+            // and metrics — instead of decoding every idea three times per mutation.
+            let corpus = try store.listIdeas()
+            let allSources = try store.listSources()
             if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                ideas = try store.listIdeas()
-                sources = try store.listSources()
+                ideas = corpus
+                sources = allSources
             } else {
                 ideas = try store.searchIdeas(searchText)
                 sources = try store.searchSources(searchText)
             }
+            statusCounts = corpus.reduce(into: [:]) { $0[$1.status, default: 0] += 1 }
+            totalSourceCount = allSources.count
             jobs = try store.listJobs()
             logs = try store.runLogs()
             connections = try store.connections()
@@ -299,12 +309,10 @@ public final class ShellViewModel: ObservableObject {
             portfolioReport = try store.loadPortfolioReport()
             tasteProfile = try store.loadTasteProfile()
             ripenessCalibration = try store.loadRipenessCalibration()
-            // Built from the FULL corpus (not the search-filtered view) so the counts and
-            // local-scoring manifold reflect the whole portfolio.
-            conceptTaste = TasteManifold.build(ideas: try store.listIdeas(), outcomes: buildOutcomes)
+            conceptTaste = TasteManifold.build(ideas: corpus, outcomes: buildOutcomes)
             spentTodayUSD = (try? store.usageTotalUSD(since: Calendar.current.startOfDay(for: Date()))) ?? 0
-            forecastAccuracy = refreshForecasts()
-            metrics = try makeMetrics()
+            forecastAccuracy = refreshForecasts(corpus: corpus)
+            metrics = try makeMetrics(corpus: corpus)
             refreshPageModels()
         } catch {
             errorMessage = error.localizedDescription
@@ -962,6 +970,98 @@ public final class ShellViewModel: ObservableObject {
         }
     }
 
+    /// Ideas an insight cites, resolved against the FULL corpus (not the search-filtered
+    /// view) and excluding archived/terminal ideas — the candidates a merge can act on.
+    public func mergeCandidates(for insight: PortfolioInsight) -> [IdeaSeed] {
+        let all = (try? store.listIdeas()) ?? ideas
+        return insight.relatedIdeaTitles.compactMap { title in
+            all.first { $0.title.lowercased() == title.lowercased() && $0.status != .archived }
+        }
+    }
+
+    public func mergeIdea(_ secondary: IdeaSeed, into primary: IdeaSeed) {
+        mergeIdeas([secondary], into: primary)
+    }
+
+    /// Fold one or more ideas into a survivor — making the portfolio synthesis's "these
+    /// are really one idea" insight executable. Unions bodies/tags/sources/axes, MIGRATES
+    /// the folded ideas' connections to the survivor (so the graph isn't thinned),
+    /// inherits privacy taint, recomputes the text hash, then removes the folded ideas.
+    public func mergeIdeas(_ secondaries: [IdeaSeed], into primary: IdeaSeed) {
+        do {
+            var merged = try store.idea(id: primary.id)
+            var folded: [UUID] = []
+            for secondary in secondaries where secondary.id != merged.id {
+                let other = try store.idea(id: secondary.id)
+                let otherBody = other.body.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !otherBody.isEmpty, !merged.body.contains(otherBody) {
+                    merged.body += "\n\n— merged from “\(other.title)” —\n\(other.body)"
+                }
+                merged.manualTags = Array(Set(merged.manualTags + other.manualTags)).sorted()
+                merged.sourceIDs = Array(Set(merged.sourceIDs + other.sourceIDs))
+                merged.ripeness = max(merged.ripeness, other.ripeness)
+                merged.novelty = max(merged.novelty, other.novelty)
+                merged.evidence = max(merged.evidence, other.evidence)
+                merged.personalResonance = max(merged.personalResonance, other.personalResonance)
+                merged.feasibility = max(merged.feasibility, other.feasibility)
+                merged.timing = max(merged.timing, other.timing)
+                merged.status = moreMatureStatus(merged.status, other.status)
+                // Privacy taint is inherited — the merged body now contains the other
+                // idea's content, which may be never-send.
+                merged.derivedFromNeverSend = merged.derivedFromNeverSend || other.derivedFromNeverSend
+
+                // Migrate the folded idea's connections to the survivor (re-point the
+                // endpoint, drop self-edges; saveConnection de-dupes undirected pairs) —
+                // otherwise edges THIRD ideas hold to it would be silently destroyed.
+                for connection in try store.connections(for: other.id) {
+                    let from = connection.fromID == other.id ? merged.id : connection.fromID
+                    let to = connection.toID == other.id ? merged.id : connection.toID
+                    if from != to {
+                        try store.saveConnection(IdeaConnection(fromID: from, toID: to, explanation: connection.explanation, confidence: connection.confidence))
+                    }
+                }
+                // Re-point the folded idea's sources to the survivor.
+                for sourceID in other.sourceIDs {
+                    if var source = try? store.source(id: sourceID) {
+                        source.linkedIdeaIDs.removeAll { $0 == other.id }
+                        if !source.linkedIdeaIDs.contains(merged.id) { source.linkedIdeaIDs.append(merged.id) }
+                        try store.upsertSource(source)
+                    }
+                }
+                folded.append(other.id)
+            }
+            guard !folded.isEmpty else { return }
+
+            // The body changed, so the dedup/search hash must be recomputed.
+            merged.textHash = TextHashing.sha256("\(merged.title)\n\(merged.body)\n\(merged.manualTags.joined(separator: " "))")
+            merged.updatedAt = Date()
+            // Additive writes first, deletions last — a crash mid-merge leaves a harmless
+            // duplicate, never lost content.
+            try store.upsertIdea(merged)
+            for id in folded {
+                try store.deleteIdea(id) // store-level (no taste penalty — merge isn't rejection)
+            }
+            selectedPage = page(for: merged.status)
+            reload()
+            errorMessage = "Merged \(folded.count) idea\(folded.count == 1 ? "" : "s") into “\(merged.title)”."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func moreMatureStatus(_ lhs: IdeaStatus, _ rhs: IdeaStatus) -> IdeaStatus {
+        func rank(_ status: IdeaStatus) -> Int {
+            switch status {
+            case .ready: 4
+            case .ripening: 3
+            case .fermenting: 2
+            case .inbox: 1
+            case .archived: 0
+            }
+        }
+        return rank(lhs) >= rank(rhs) ? lhs : rhs
+    }
+
     public func duplicateIdea(_ idea: IdeaSeed) {
         do {
             var copy = try store.createIdea(title: "\(idea.title) Copy", body: idea.body, tags: idea.manualTags, status: .inbox, stage: .seed)
@@ -1434,13 +1534,15 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func count(for page: IFMPage) -> Int {
+        // Nav badges describe the whole portfolio (full-corpus counts), so an active
+        // search filtering the visible lists doesn't make the sidebar numbers drop.
         switch page {
-        case .inbox: ideas.filter { $0.status == .inbox }.count
-        case .fermenting: ideas.filter { $0.status == .fermenting }.count
-        case .ripening: ideas.filter { $0.status == .ripening }.count
-        case .ready: ideas.filter { $0.status == .ready }.count
-        case .archive: ideas.filter { $0.status == .archived }.count
-        case .sources: sources.count
+        case .inbox: statusCounts[.inbox] ?? 0
+        case .fermenting: statusCounts[.fermenting] ?? 0
+        case .ripening: statusCounts[.ripening] ?? 0
+        case .ready: statusCounts[.ready] ?? 0
+        case .archive: statusCounts[.archived] ?? 0
+        case .sources: totalSourceCount
         case .patterns: connections.count
         case .autonomy: scoutMissions.filter(\.isEnabled).count
         case .settings, .costCenter, .privacyCenter: 0
@@ -1687,12 +1789,14 @@ public final class ShellViewModel: ObservableObject {
         return url
     }
 
-    private func makeMetrics() throws -> AppMetrics {
-        let tagCount = Set(ideas.flatMap(\.manualTags)).count
+    private func makeMetrics(corpus: [IdeaSeed]) throws -> AppMetrics {
+        // Metrics describe the whole portfolio, so they read the full corpus — never the
+        // search-filtered `ideas` view.
+        let tagCount = Set(corpus.flatMap(\.manualTags)).count
         let sourceTypes = Set(sources.map(\.type)).count
         let diversity = min(1, Double(tagCount + sourceTypes) / 12)
         let load = min(1, Double(jobs.filter { $0.status == .pending || $0.status == .running }.count) / 25)
-        let avg = ideas.isEmpty ? 0 : ideas.reduce(0) { $0 + $1.ripeness } / Double(ideas.count)
+        let avg = corpus.isEmpty ? 0 : corpus.reduce(0) { $0 + $1.ripeness } / Double(corpus.count)
         return AppMetrics(
             diversity: diversity,
             incubationLoad: load,
@@ -1738,13 +1842,11 @@ public final class ShellViewModel: ObservableObject {
     /// Snapshot a forecast for any idea that has reached Ready without one yet (the
     /// app's *prediction*), then recompute how well past predictions have held up.
     /// Idempotent: the open-forecast guard means it's safe to run on every reload.
-    private func refreshForecasts() -> ForecastAccuracy {
+    private func refreshForecasts(corpus: [IdeaSeed]) -> ForecastAccuracy {
         do {
             var logs = try store.forecastLogs()
             let withOpen = Set(logs.filter { !$0.isResolved }.map(\.ideaID))
-            // Use the full store, not the search-filtered view, so a forecast is recorded
-            // regardless of the active search.
-            for idea in try store.listIdeas() where idea.status == .ready && !withOpen.contains(idea.id) {
+            for idea in corpus where idea.status == .ready && !withOpen.contains(idea.id) {
                 let log = makeForecast(for: idea)
                 try store.saveForecastLog(log)
                 logs.insert(log, at: 0)
