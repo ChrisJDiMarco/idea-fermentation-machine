@@ -685,12 +685,88 @@ public final class ShellViewModel: ObservableObject {
         errorMessage = note
     }
 
-    private func recordPortfolioUsage(provider: any LLMProvider, model: LLMModel, response: LLMResponse) {
+    private func recordPortfolioUsage(provider: any LLMProvider, model: LLMModel, response: LLMResponse, taskClass: ModelTaskClass = .prototypeBrief) {
         let cost = CostEstimator.estimate(model: model, inputTokens: response.inputTokens, outputTokens: response.outputTokens) ?? 0
         try? store.saveUsage(LLMUsageRecord(
-            provider: provider.providerName, model: model.name, taskClass: .prototypeBrief,
+            provider: provider.providerName, model: model.name, taskClass: taskClass,
             inputTokens: response.inputTokens, outputTokens: response.outputTokens, estimatedCostUSD: cost
         ))
+    }
+
+    /// A multi-step "deep critique": two cloud calls that reason about the idea AND about
+    /// the first-pass critique, surfacing the load-bearing assumption and the cheapest
+    /// test to kill it. Cloud-only (the loop needs a real model); falls back to a single
+    /// local critique when there's no key, the cap is reached, or it's never-send.
+    public func deepCritique(for idea: IdeaSeed) {
+        guard !isRunningJob else {
+            errorMessage = "Another AI run is finishing — try again in a moment."
+            return
+        }
+        registerInterest(in: idea)
+
+        let relatedSources = idea.sourceIDs.compactMap { id in sources.first { $0.id == id } }
+        if idea.derivedFromNeverSend || relatedSources.contains(where: { $0.neverSendToCloud }) {
+            runLocalAgentFallback(for: idea, taskClass: .critique, label: "Critique",
+                                  reason: "\(idea.title) came from never-send material, so it got a local critique. Lift the privacy block for a deep one.")
+            return
+        }
+
+        let route = makeRouter().route(taskClass: .critique, inputTokens: 900, outputTokens: 700)
+        let providers = ProviderFactory.defaultProviders(settings: providerSettings)
+        guard let provider = providers.first(where: { $0.providerName == route.provider }),
+              let key = apiKey(for: provider.providerName),
+              let model = provider.availableModels.first(where: { $0.name == route.model }) ?? provider.availableModels.first
+        else {
+            runLocalAgentFallback(for: idea, taskClass: .critique, label: "Critique",
+                                  reason: "Deep critique needs a cloud key — gave \(idea.title) a local critique. Add a key in Settings.")
+            return
+        }
+        // Two cloud calls of *different* size — step 2 also carries the first-pass draft,
+        // so estimate each call honestly and reserve the sum rather than assuming symmetry.
+        let step1Cost = route.estimatedCostUSD ?? 0
+        let step2Cost = CostEstimator.estimate(model: model, inputTokens: 1_900, outputTokens: 400) ?? 0
+        let estimatedTotal = step1Cost + step2Cost
+        if route.estimatedCostUSD != nil, !fitsSpendCaps(estimatedTotal) {
+            runLocalAgentFallback(for: idea, taskClass: .critique, label: "Critique",
+                                  reason: "Spend cap reached — gave \(idea.title) a local critique instead.")
+            return
+        }
+        let releaseReservation = reserveSpend(estimatedTotal)
+        isRunningJob = true
+        selectedPage = page(for: idea.status)
+        let taste = tasteProfile?.source.hasPrefix("cloud") == true ? tasteProfile : nil
+        Task {
+            defer { Task { @MainActor in releaseReservation(); self.isRunningJob = false } }
+            do {
+                let outcome = try await AgentCritic.deepCritique(idea: idea, tasteProfile: taste, provider: provider, model: model, apiKey: key)
+                await MainActor.run {
+                    // Record every call that actually came back — even on a degraded run we
+                    // still paid for it, so the spend ledger and caps stay honest.
+                    for response in outcome.responses {
+                        self.recordPortfolioUsage(provider: provider, model: model, response: response, taskClass: .critique)
+                    }
+                    guard let critique = outcome.critique else {
+                        self.runLocalAgentFallback(for: idea, taskClass: .critique, label: "Critique",
+                                                   reason: "The deep critique's first pass didn't produce usable reasoning — used a local one for \(idea.title).")
+                        return
+                    }
+                    try? self.store.saveCritique(IdeaCritique(
+                        ideaID: idea.id,
+                        assumptions: critique.assumptions,
+                        risks: critique.risks,
+                        contradictions: critique.contradictions,
+                        source: "deep · \(provider.providerName)"
+                    ))
+                    self.reload()
+                    self.errorMessage = "Deep critique ready for \(idea.title) via \(provider.providerName) — load-bearing assumption + the test to kill it. It's on the idea's card and in Patterns."
+                }
+            } catch {
+                await MainActor.run {
+                    self.runLocalAgentFallback(for: idea, taskClass: .critique, label: "Critique",
+                                               reason: "Deep critique didn't land (\(error.localizedDescription)) — used a local one for \(idea.title).")
+                }
+            }
+        }
     }
 
     /// Resolve the ideas an insight is about, for the clickable chips in the UI.

@@ -627,6 +627,10 @@ struct IdeaActionsMenu: View {
 
     var body: some View {
         Menu {
+            Button("Critique") { model.queueCritique(for: idea) }
+            Button("Deep Critique") { model.deepCritique(for: idea) }
+                .help("A multi-step critique that finds the load-bearing assumption and the cheapest test to kill it.")
+            Divider()
             Button("Move to Fermenting") { model.moveIdeaToFermenting(idea) }
             Button("Mark Ready") { model.markIdeaReady(idea) }
             if model.buildPlan(for: idea) == nil {
@@ -856,15 +860,18 @@ struct FermentationDetailCard: View {
                         RipenessRing(score: idea.ripeness, color: IFMTheme.orange)
                     }
                     .padding(18)
+                    let critique = model.critique(for: idea)
                     HStack {
                         Button("Critique") { model.queueCritique(for: idea) }
                         Button("Prototype Brief") { model.queuePrototypeBrief(for: idea) }
                         Spacer()
+                        if let source = critique?.source {
+                            CritiqueSourceBadge(source: source)
+                        }
                     }
                     .padding(.horizontal, 18)
                     .padding(.bottom, 14)
                     Divider()
-                    let critique = model.critique(for: idea)
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 0)], spacing: 0) {
                         DetailPane(title: "Signals", symbol: "sun.max", color: IFMTheme.orange, lines: idea.manualTags.isEmpty ? ["Add tags or sources to strengthen the signal."] : idea.manualTags)
                         DetailPane(title: "Evidence", symbol: "doc.text", color: IFMTheme.green, lines: ["\(idea.sourceIDs.count) linked sources", "Evidence score \(Int(idea.evidence))"])
@@ -876,6 +883,36 @@ struct FermentationDetailCard: View {
                 }
             }
         )
+    }
+}
+
+/// A small pill showing how the current critique was produced — a paid multi-step
+/// "deep" critique, an instant cloud critique, or the free local heuristic — so the
+/// distinct work the user paid for is visible, not just persisted.
+struct CritiqueSourceBadge: View {
+    var source: String
+
+    private var isDeep: Bool { source.hasPrefix("deep") }
+    private var isCloud: Bool { source.hasPrefix("cloud") || isDeep }
+
+    private var symbol: String {
+        if isDeep { return "sparkles" }
+        if isCloud { return "cloud" }
+        return "cpu"
+    }
+
+    private var color: Color { isDeep ? IFMTheme.purple : (isCloud ? IFMTheme.blue : IFMTheme.slate) }
+
+    var body: some View {
+        Label(source, systemImage: symbol)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.1))
+            .clipShape(Capsule())
+            .help(isDeep ? "A multi-step deep critique — load-bearing assumption + the cheapest test to kill it."
+                         : (isCloud ? "An instant cloud critique." : "A local, on-device critique (no key needed)."))
     }
 }
 

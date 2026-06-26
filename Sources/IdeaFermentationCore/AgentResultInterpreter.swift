@@ -71,6 +71,13 @@ enum AgentResultInterpreter {
             .filter { $0.count >= 4 && !Tokenizer.stopwords.contains($0) })
     }
 
+    /// Decodes a model's critique JSON *without* the heuristic fallback — nil when the
+    /// model returned nothing parseable. Lets callers tell real cloud reasoning from the
+    /// canned local objections, so a degraded run isn't billed/labelled as "deep".
+    static func decodedCritique(from output: String) -> CritiqueResult? {
+        decode(CritiqueResult.self, from: output)
+    }
+
     static func critique(for idea: IdeaSeed, output: String? = nil) -> CritiqueResult {
         if let decoded = decode(CritiqueResult.self, from: output) { return decoded }
 
