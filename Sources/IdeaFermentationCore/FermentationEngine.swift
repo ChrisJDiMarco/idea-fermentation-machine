@@ -155,9 +155,65 @@ public final class FermentationEngine {
         guard settings.nextLocalRunAt == nil || settings.nextLocalRunAt! <= now else { return next }
         _ = try runLocalPass(maxIdeas: settings.maxLocalJobsPerPass)
         _ = try runDueLocalJobs(maxJobs: settings.maxLocalJobsPerPass, now: now)
+        _ = try runMaintenance(now: now)
         next.nextLocalRunAt = Date(timeInterval: Double(settings.localCadenceMinutes * 60), since: now)
         try store.saveSchedulerSettings(next)
         return next
+    }
+
+    /// Default idle span after which an untraction'd machine idea is archived.
+    public static let maintenanceStaleDays = 21
+    /// Cap on the number of live (non-archived) machine-generated ideas the autonomous
+    /// loop may accumulate before the lowest-value ones are garbage-collected.
+    public static let machineWorkingSetCap = 120
+
+    /// Garbage-collect the autonomous loop's OWN noise so the portfolio converges instead
+    /// of accumulating near-duplicate zombies. Conservative by construction: it only ever
+    /// archives MACHINE-generated ideas (scout/mind/discovery) that went stale at low
+    /// ripeness without ever being quality-verified — the operator's own captures are never
+    /// auto-archived. Also caps the live machine working set so an unattended loop can't
+    /// grow the corpus without bound. Returns the ideas it archived.
+    @discardableResult
+    public func runMaintenance(now: Date = Date(), staleDays: Int = maintenanceStaleDays, workingSetCap: Int = machineWorkingSetCap) throws -> [IdeaSeed] {
+        let all = try store.listIdeas()
+        let staleBefore = now.addingTimeInterval(-Double(staleDays) * 86_400)
+        var archivedIDs = Set<UUID>()
+        var archived: [IdeaSeed] = []
+
+        func archive(_ idea: IdeaSeed) throws {
+            var next = idea
+            next.status = .archived
+            next.stage = .needsDistance
+            next.updatedAt = now
+            try store.upsertIdea(next)
+            archivedIDs.insert(idea.id)
+            archived.append(next)
+        }
+
+        // A machine idea is "reclaimable" only while it's still unproven: inbox/fermenting,
+        // not quality-verified, and low ripeness. Ripening/Ready/verified ideas are safe.
+        func reclaimable(_ idea: IdeaSeed) -> Bool {
+            idea.origin.isMachineGenerated
+                && !idea.qualityVerified
+                && (idea.status == .inbox || idea.status == .fermenting)
+                && idea.ripeness < Self.ripeningThreshold
+        }
+
+        // 1) Decay: reclaimable machine ideas that haven't moved in weeks.
+        for idea in all where reclaimable(idea) && idea.updatedAt < staleBefore {
+            try archive(idea)
+        }
+
+        // 2) Working-set cap: if live reclaimable machine ideas still exceed the cap, archive
+        //    the lowest-ripeness (then oldest) overflow so the loop can't grow unbounded.
+        let remaining = all.filter { reclaimable($0) && !archivedIDs.contains($0.id) }
+        if remaining.count > workingSetCap {
+            let overflow = remaining
+                .sorted { a, b in a.ripeness != b.ripeness ? a.ripeness < b.ripeness : a.updatedAt < b.updatedAt }
+                .prefix(remaining.count - workingSetCap)
+            for idea in overflow { try archive(idea) }
+        }
+        return archived
     }
 
     @discardableResult

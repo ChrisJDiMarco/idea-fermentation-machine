@@ -1271,7 +1271,7 @@ public final class ShellViewModel: ObservableObject {
 
     public func createIdea(from source: SourceItem) {
         do {
-            var idea = try store.createIdea(title: source.title, body: source.body.isEmpty ? "Imported from \(source.type.rawValue)." : source.body, tags: [source.type.rawValue])
+            var idea = try store.createIdea(title: source.title, body: source.body.isEmpty ? "Imported from \(source.type.rawValue)." : source.body, tags: [source.type.rawValue], origin: .capture)
             // The new idea's body is a copy of the source body. Link them in BOTH
             // directions so privacy redaction (which keys on the idea↔source link) still
             // protects a never-send source's content that now lives in the idea body.
@@ -1459,8 +1459,24 @@ public final class ShellViewModel: ObservableObject {
         let safeSources = allSources.filter { !$0.neverSendToCloud }
         let safeThoughts = mindThoughts.filter { !$0.derivedFromNeverSend }
 
+        // Echo-chamber guard: the mind must not reason primarily over its OWN prior output,
+        // or it ferments generated ideas into more generated ideas. Ground it on the
+        // operator's ideas (and scout/discovery finds); fall back to everything only if
+        // that leaves too little to think about.
+        let grounding = safeIdeas.filter { $0.origin != .mind }
+        let materialIdeas = grounding.count >= 2 ? grounding : safeIdeas
+
+        // Feed the cycle REAL external signals (the loop used to pass an empty list, so the
+        // mind only ever recombined what it already held). Free public endpoints, so this is
+        // cheap; skipped when web scouting is off.
+        var liveSignals: [ScoutSignal] = []
+        if autonomyProfile.allowWebScouting, let mission = scoutMissions.first(where: \.isEnabled) ?? scoutMissions.first {
+            let fetched = (try? await scoutSignals(query: scoutFocus.augment(query: mission.query))) ?? []
+            liveSignals = AutonomousScout.filterSignals(fetched, profile: autonomyProfile)
+        }
+
         let cloudMaterial = CognitiveLoop.Material(
-            ideas: safeIdeas, sources: safeSources, signals: [],
+            ideas: materialIdeas, sources: safeSources, signals: liveSignals,
             priorThoughts: safeThoughts, derivedFromNeverSend: false
         )
 
@@ -1605,9 +1621,12 @@ public final class ShellViewModel: ObservableObject {
         let cost = result.responses.reduce(0.0) { sum, r in
             sum + (CostEstimator.estimate(model: modelStub(for: r), inputTokens: r.inputTokens, outputTokens: r.outputTokens) ?? 0)
         }
+        // Stamp provenance from the cycle that produced the seed, so machine-authored ideas
+        // are marked and can be excluded as re-fermentation fuel (echo-chamber guard).
+        let origin: IdeaOrigin = session.source.hasPrefix("discovered") ? .discovery : .mind
         var generatedIDs: [UUID] = []
         for seed in result.generated {
-            if let id = admitGeneratedIdea(seed, tainted: session.derivedFromNeverSend) { generatedIDs.append(id) }
+            if let id = admitGeneratedIdea(seed, tainted: session.derivedFromNeverSend, origin: origin) { generatedIDs.append(id) }
         }
         session.generatedIdeaIDs = generatedIDs
         session.costUSD = cost
@@ -1652,10 +1671,24 @@ public final class ShellViewModel: ObservableObject {
     }
 
     /// Create an inbox idea from a mind-generated seed and queue it for a local ripeness pass,
-    /// mirroring how the scout admits its output. Returns the new idea's ID.
-    private func admitGeneratedIdea(_ seed: ExtractedSeed, tainted: Bool) -> UUID? {
+    /// mirroring how the scout admits its output. Semantic-deduped and provenance-stamped so
+    /// the mind/discovery generators can't mint unbounded near-duplicates. Returns the new (or
+    /// matched existing) idea's ID.
+    private func admitGeneratedIdea(_ seed: ExtractedSeed, tainted: Bool, origin: IdeaOrigin) -> UUID? {
         do {
-            var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
+            // Dedup: if the mind just re-proposed something close to an idea you already have,
+            // don't spawn a near-duplicate — return the existing idea so the session still links
+            // to real content. The scout has always deduped this way; the two highest-volume
+            // generators (mind + discovery) used to skip the check entirely.
+            let seedVector = LocalEmbeddings.embed("\(seed.title)\n\(seed.body)")
+            let corpus = (try? store.listIdeas()) ?? []
+            if let match = corpus
+                .map({ (idea: $0, score: LocalEmbeddings.cosine(seedVector, $0.embedding)) })
+                .max(by: { $0.score < $1.score }),
+               match.score >= LocalEmbeddings.strongMatchFloor {
+                return match.idea.id
+            }
+            var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags, origin: origin)
             if tainted {
                 idea.derivedFromNeverSend = true
                 try store.upsertIdea(idea)
@@ -1740,7 +1773,7 @@ public final class ShellViewModel: ObservableObject {
                 // deterministic template. Either way it's source-backed and local-scored.
                 let synthesized = shouldUseWeb ? await synthesizeScoutIdea(mission: mission, signals: signals, focus: focus, unattended: scheduledOnly) : nil
                 let seed = synthesized ?? AutonomousScout.draftIdea(profile: autonomyProfile, mission: mission, signals: signals)
-                var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags)
+                var idea = try store.createIdea(title: seed.title, body: seed.body, tags: seed.tags, origin: .scout)
                 idea.sourceIDs = sourceIDs
                 // When web scouting is off the fallback sources are never-send, so a
                 // scout idea built from them inherits the taint.

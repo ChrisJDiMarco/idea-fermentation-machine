@@ -380,7 +380,7 @@ public final class IdeaStore {
     }
 
     @discardableResult
-    public func createIdea(title: String, body: String, tags: [String] = [], status: IdeaStatus = .inbox, stage: FermentationStage = .seed) throws -> IdeaSeed {
+    public func createIdea(title: String, body: String, tags: [String] = [], status: IdeaStatus = .inbox, stage: FermentationStage = .seed, origin: IdeaOrigin = .manual) throws -> IdeaSeed {
         let combined = "\(title)\n\(body)\n\(tags.joined(separator: " "))"
         let hash = TextHashing.sha256(combined)
         guard try db.query("SELECT id FROM idea_seeds WHERE text_hash = ?", [.text(hash)]).isEmpty else {
@@ -393,7 +393,8 @@ public final class IdeaStore {
             stage: stage,
             manualTags: tags,
             textHash: hash,
-            embedding: LocalEmbeddings.embed(combined)
+            embedding: LocalEmbeddings.embed(combined),
+            origin: origin
         )
         try upsertIdea(idea)
         return idea
