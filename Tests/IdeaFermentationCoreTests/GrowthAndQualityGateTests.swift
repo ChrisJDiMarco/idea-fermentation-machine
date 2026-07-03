@@ -96,14 +96,55 @@ struct GrowthAndQualityGateTests {
     // MARK: - Quality gate on Ready
 
     @Test func promotionGateRequiresQualityVerificationForReady() {
-        // A ready-scoring idea that has NOT been cloud-verified is held at Ripening…
-        #expect(FermentationEngine.promotion(ripeness: 92, qualityVerified: false, current: .ripening)?.0 == .ripening)
-        // …and the same score, once a real cloud pass verified it, is allowed to reach Ready.
-        #expect(FermentationEngine.promotion(ripeness: 92, qualityVerified: true, current: .ripening)?.0 == .ready)
+        // A ready-scoring idea whose pass is NOT a decoded cloud eval is held at Ripening…
+        #expect(FermentationEngine.promotion(ripeness: 92, verifiedThisPass: false, current: .ripening)?.0 == .ripening)
+        // …and the same score, from a real decoded cloud pass, is allowed to reach Ready.
+        #expect(FermentationEngine.promotion(ripeness: 92, verifiedThisPass: true, current: .ripening)?.0 == .ready)
         // Mid-range scores land at Ripening regardless of verification.
-        #expect(FermentationEngine.promotion(ripeness: 60, qualityVerified: false, current: .fermenting)?.0 == .ripening)
+        #expect(FermentationEngine.promotion(ripeness: 60, verifiedThisPass: false, current: .fermenting)?.0 == .ripening)
         // A fresh low-scoring inbox idea starts fermenting.
-        #expect(FermentationEngine.promotion(ripeness: 10, qualityVerified: false, current: .inbox)?.0 == .fermenting)
+        #expect(FermentationEngine.promotion(ripeness: 10, verifiedThisPass: false, current: .inbox)?.0 == .fermenting)
+    }
+
+    @Test func readyMembershipOnlyMovesOnAVerifiedPass() {
+        // A Ready idea is LEFT ALONE by any non-verified pass (local, or degraded cloud),
+        // even if the recomputed score drops — no silent demotion, so it can't then
+        // re-promote later and oscillate.
+        #expect(FermentationEngine.promotion(ripeness: 40, verifiedThisPass: false, current: .ready) == nil)
+        #expect(FermentationEngine.promotion(ripeness: 90, verifiedThisPass: false, current: .ready) == nil)
+        // Only a fresh decoded cloud pass may move it out of Ready.
+        #expect(FermentationEngine.promotion(ripeness: 40, verifiedThisPass: true, current: .ready)?.0 == .fermenting)
+        #expect(FermentationEngine.promotion(ripeness: 90, verifiedThisPass: true, current: .ready)?.0 == .ready)
+    }
+
+    @Test func localPassNeitherPromotesNorDemotesReadyMembership() throws {
+        // Regression: a verified Ready idea must not be demoted by a local pass whose
+        // recomputed heuristic score dips below the Ready line — otherwise it would later
+        // re-promote and oscillate in/out of Ready with no new cloud pass.
+        let store = try makeStore()
+        let ready = IdeaSeed(
+            title: "Verified ready idea", body: "Short body that scores low on local heuristics.",
+            status: .ready, stage: .readyToPrototype,
+            textHash: TextHashing.sha256(UUID().uuidString),
+            embedding: LocalEmbeddings.embed("verified ready idea"),
+            ripeness: 85, origin: .manual, qualityVerified: true
+        )
+        try store.upsertIdea(ready)
+        // A thin, unverified idea that scores low locally must not sneak into Ready either.
+        try store.upsertIdea(IdeaSeed(
+            title: "Thin unverified", body: "tiny.",
+            status: .fermenting, stage: .cooling,
+            textHash: TextHashing.sha256(UUID().uuidString),
+            embedding: LocalEmbeddings.embed("thin unverified")
+        ))
+
+        let engine = FermentationEngine(store: store)
+        _ = try engine.runLocalPass(maxIdeas: 10)
+        _ = try engine.runLocalPass(maxIdeas: 10) // a second tick — the oscillation would show here
+
+        let readyAfter = try store.idea(id: ready.id)
+        #expect(readyAfter.status == .ready) // stayed Ready despite low local recompute — no demotion
+        #expect(try store.listIdeas().allSatisfy { $0.status != .ready || $0.qualityVerified })
     }
 
     @Test func localPassNeverPromotesUnverifiedBulkToReady() throws {

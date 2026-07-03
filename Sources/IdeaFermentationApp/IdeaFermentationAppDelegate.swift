@@ -64,6 +64,11 @@ public final class IdeaFermentationAppDelegate: NSObject, NSApplicationDelegate 
             backing: .buffered,
             defer: false
         )
+        // Keep the reference valid after the user closes the window. Now that the app runs
+        // headless in the background (loops + capture server), close→reopen is a primary
+        // flow; with the AppKit default (isReleasedWhenClosed = true) `self.window` would
+        // dangle to a freed object and reopen could crash. We reuse this same window instance.
+        window.isReleasedWhenClosed = false
         window.title = "Idea Fermentation Machine"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true

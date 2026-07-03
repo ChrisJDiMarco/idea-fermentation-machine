@@ -1036,8 +1036,13 @@ public final class ShellViewModel: ObservableObject {
     public func markIdeaReady(_ idea: IdeaSeed) {
         do {
             var readyIdea = try store.idea(id: idea.id)
+            // Explicit operator override: the human deciding an idea is ready IS a quality
+            // vetting — stronger than any model pass — so this intentionally bypasses the
+            // cloud quality gate AND stamps qualityVerified, so a later local pass then
+            // treats Ready membership as legitimately earned (see FermentationEngine.promotion).
             readyIdea.status = .ready
             readyIdea.stage = .readyToPrototype
+            readyIdea.qualityVerified = true
             readyIdea.ripeness = max(readyIdea.ripeness, 80)
             readyIdea.updatedAt = Date()
             try store.upsertIdea(readyIdea)

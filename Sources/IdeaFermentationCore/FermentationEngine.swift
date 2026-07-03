@@ -473,8 +473,12 @@ public final class FermentationEngine {
         idea.timing = result.timing
         idea.ripeness = calibration.ripeness(novelty: result.novelty, clarity: result.clarity, evidence: result.evidence, resonance: result.personalResonance, feasibility: result.feasibility, timing: result.timing)
         idea.updatedAt = Date()
+        // The sticky flag records that a real cloud pass has vetted this idea (used by the
+        // taste manifold + UI). Ready ADMISSION, however, is gated on THIS pass being a
+        // genuine decoded evaluation — not the historical flag — so a degraded cloud run
+        // can't ride a stale verification into Ready.
         if qualityVerified { idea.qualityVerified = true }
-        if let (status, stage) = Self.promotion(ripeness: idea.ripeness, qualityVerified: idea.qualityVerified, current: idea.status) {
+        if let (status, stage) = Self.promotion(ripeness: idea.ripeness, verifiedThisPass: qualityVerified, current: idea.status) {
             idea.status = status
             idea.stage = stage
         }
@@ -511,12 +515,27 @@ public final class FermentationEngine {
     public static let readyThreshold = 78.0
     public static let ripeningThreshold = 55.0
 
-    /// The (status, stage) an idea earns at a given ripeness under the quality gate.
-    /// Returns nil to mean "leave status/stage unchanged". A ready-scoring idea that
-    /// isn't quality-verified is held at Ripening rather than promoted.
-    public static func promotion(ripeness: Double, qualityVerified: Bool, current: IdeaStatus) -> (IdeaStatus, FermentationStage)? {
+    /// The (status, stage) an idea earns at a given ripeness. Returns nil to mean "leave
+    /// status/stage unchanged".
+    ///
+    /// Ready membership is decided EXCLUSIVELY by a genuine, decoded cloud pass
+    /// (`verifiedThisPass`). This is the hard invariant: a local heuristic pass (or a
+    /// degraded cloud pass that fell back to local scores) can neither promote an idea INTO
+    /// Ready nor demote one OUT of it — so an idea can't oscillate in and out of Ready on
+    /// local-arithmetic drift once it's been verified. Only a fresh, decoded cloud
+    /// evaluation moves the Ready line in either direction.
+    public static func promotion(ripeness: Double, verifiedThisPass: Bool, current: IdeaStatus) -> (IdeaStatus, FermentationStage)? {
+        // A Ready idea only ever moves on a fresh verified re-evaluation; anything else
+        // (local pass, degraded cloud) leaves it exactly where it is.
+        if current == .ready {
+            guard verifiedThisPass else { return nil }
+            if ripeness >= readyThreshold { return (.ready, .readyToPrototype) }
+            if ripeness >= ripeningThreshold { return (.ripening, .brewing) }
+            return (.fermenting, .cooling)
+        }
+        // Not currently Ready: entry into Ready requires this pass to be verified.
         if ripeness >= readyThreshold {
-            return qualityVerified ? (.ready, .readyToPrototype) : (.ripening, .brewing)
+            return verifiedThisPass ? (.ready, .readyToPrototype) : (.ripening, .brewing)
         }
         if ripeness >= ripeningThreshold { return (.ripening, .brewing) }
         if current == .inbox { return (.fermenting, .cooling) }
@@ -606,10 +625,11 @@ public final class FermentationEngine {
         next.ripeness = calibration.ripeness(novelty: novelty, clarity: clarity, evidence: evidence, resonance: resonance, feasibility: feasibility, timing: timing)
         next.updatedAt = Date()
 
-        // Quality-gated ladder: an idea that has NOT been cloud-verified can climb to
-        // Ripening on local arithmetic but never auto-promote to Ready — that stops a
-        // verbose, over-tagged, source-stuffed but unreasoned idea from gaming its way in.
-        if let (status, stage) = Self.promotion(ripeness: next.ripeness, qualityVerified: next.qualityVerified, current: next.status) {
+        // A local pass NEVER decides Ready membership (verifiedThisPass: false): it can climb
+        // an idea to Ripening but never into Ready, and it leaves an already-Ready idea
+        // untouched — so scores refresh every tick without letting local drift flip an idea
+        // in or out of Ready. Only a decoded cloud pass moves the Ready line.
+        if let (status, stage) = Self.promotion(ripeness: next.ripeness, verifiedThisPass: false, current: next.status) {
             next.status = status
             next.stage = stage
         }

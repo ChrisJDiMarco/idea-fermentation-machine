@@ -72,15 +72,16 @@ struct PrivacyAndEngineTests {
         let idea = IdeaSeed(
             title: "Private local AI prototype",
             body: String(repeating: "Build a private local AI agent ambient memory context prototype workflow for real user tests. ", count: 20),
-            status: .fermenting,
-            stage: .brewing,
+            // Already Ready + quality-verified (as if a real cloud pass promoted it): a local
+            // pass leaves Ready membership untouched, so the idea stays Ready and the local
+            // pipeline persists a brief. A local pass can never itself promote to Ready — see
+            // `localPassNeverPromotesUnverifiedBulkToReady` and `readyMembershipOnlyMovesOnAVerifiedPass`.
+            status: .ready,
+            stage: .readyToPrototype,
             sourceIDs: sourceIDs,
             manualTags: ["ai", "prototype", "workflow", "local", "memory"],
             textHash: TextHashing.sha256(UUID().uuidString),
             embedding: LocalEmbeddings.embed("private local ai prototype workflow"),
-            // Quality-verified (as if a real cloud pass already vetted it), so the local
-            // pass can legitimately promote it to Ready and persist a brief. Without this,
-            // the Ready quality gate holds it at Ripening — see `qualityGateHoldsUnverifiedBulkAtRipening`.
             qualityVerified: true
         )
         try store.upsertIdea(idea)
