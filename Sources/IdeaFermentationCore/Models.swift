@@ -72,9 +72,33 @@ public enum ModelTaskClass: String, Codable, CaseIterable, Sendable {
     case tag
     case summarize
     case connect
+    case deepen
     case critique
     case scoreRipeness
     case prototypeBrief
+}
+
+/// Where an idea came from. Machine-authored ideas are marked so the autonomous loop
+/// can down-weight or exclude them as re-fermentation fuel — otherwise the mind
+/// ferments its own output into an echo chamber.
+public enum IdeaOrigin: String, Codable, CaseIterable, Sendable {
+    case manual        // typed in by the operator
+    case capture       // imported from a source / browser capture
+    case scout         // autonomous web scout
+    case mind          // the cognitive loop's generated idea
+    case discovery     // discovery-mode thesis
+
+    public var isMachineGenerated: Bool { self == .mind || self == .discovery || self == .scout }
+
+    public var label: String {
+        switch self {
+        case .manual: "You"
+        case .capture: "Captured"
+        case .scout: "Scout"
+        case .mind: "The Mind"
+        case .discovery: "Discovery"
+        }
+    }
 }
 
 public struct IdeaSeed: Identifiable, Codable, Equatable, Sendable {
@@ -100,6 +124,17 @@ public struct IdeaSeed: Identifiable, Codable, Equatable, Sendable {
     /// checks ONE flag instead of re-deriving it — and sticky, so an idea that ever held
     /// protected content stays protected.
     public var derivedFromNeverSend: Bool
+    /// Where this idea came from. Drives echo-chamber protection (machine-authored ideas
+    /// are down-weighted as re-fermentation fuel) and provenance display.
+    public var origin: IdeaOrigin
+    /// True once a real cloud quality pass (a decoded LLM ripeness/critique) has vetted
+    /// this idea. Reaching `.ready` REQUIRES this — a purely local heuristic pass, which
+    /// only measures structural bulk, can never promote an idea to Ready on its own.
+    public var qualityVerified: Bool
+    /// Monotonic version of the idea's body. Bumped each time the `.deepen` pass rewrites
+    /// the body; the prior text is snapshotted to `idea_body_versions` so growth is
+    /// non-destructive and reversible.
+    public var bodyVersion: Int
 
     public init(
         id: UUID = UUID(),
@@ -119,7 +154,10 @@ public struct IdeaSeed: Identifiable, Codable, Equatable, Sendable {
         evidence: Double = 0,
         personalResonance: Double = 0,
         timing: Double = 0,
-        derivedFromNeverSend: Bool = false
+        derivedFromNeverSend: Bool = false,
+        origin: IdeaOrigin = .manual,
+        qualityVerified: Bool = false,
+        bodyVersion: Int = 1
     ) {
         self.id = id
         self.title = title
@@ -139,6 +177,33 @@ public struct IdeaSeed: Identifiable, Codable, Equatable, Sendable {
         self.personalResonance = personalResonance
         self.timing = timing
         self.derivedFromNeverSend = derivedFromNeverSend
+        self.origin = origin
+        self.qualityVerified = qualityVerified
+        self.bodyVersion = bodyVersion
+    }
+}
+
+/// A non-destructive snapshot of an idea's body at a point in time. The `.deepen` pass
+/// saves the prior body here before overwriting, so every rewrite is reversible and the
+/// operator can see how the idea matured.
+public struct IdeaBodyVersion: Identifiable, Codable, Equatable, Sendable {
+    public var id: UUID
+    public var ideaID: UUID
+    public var version: Int
+    public var title: String
+    public var body: String
+    /// What produced this text: "original", "manual", or "provider/model".
+    public var source: String
+    public var createdAt: Date
+
+    public init(id: UUID = UUID(), ideaID: UUID, version: Int, title: String, body: String, source: String, createdAt: Date = Date()) {
+        self.id = id
+        self.ideaID = ideaID
+        self.version = version
+        self.title = title
+        self.body = body
+        self.source = source
+        self.createdAt = createdAt
     }
 }
 

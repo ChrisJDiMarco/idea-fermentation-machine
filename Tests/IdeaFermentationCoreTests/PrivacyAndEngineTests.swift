@@ -77,7 +77,11 @@ struct PrivacyAndEngineTests {
             sourceIDs: sourceIDs,
             manualTags: ["ai", "prototype", "workflow", "local", "memory"],
             textHash: TextHashing.sha256(UUID().uuidString),
-            embedding: LocalEmbeddings.embed("private local ai prototype workflow")
+            embedding: LocalEmbeddings.embed("private local ai prototype workflow"),
+            // Quality-verified (as if a real cloud pass already vetted it), so the local
+            // pass can legitimately promote it to Ready and persist a brief. Without this,
+            // the Ready quality gate holds it at Ripening — see `qualityGateHoldsUnverifiedBulkAtRipening`.
+            qualityVerified: true
         )
         try store.upsertIdea(idea)
         try store.upsertIdea(IdeaSeed(title: "Local workflow memory", body: "Private local AI workflow recall.", textHash: TextHashing.sha256(UUID().uuidString), embedding: LocalEmbeddings.embed("private local ai prototype workflow recall")))

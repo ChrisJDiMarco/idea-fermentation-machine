@@ -242,7 +242,7 @@ public struct ModelRouter: Sendable {
                 true
             case .connect, .critique, .scoreRipeness:
                 model.name.contains("air") || model.name.contains("flash") || model.name.contains("glm-4.6") || model.name.contains("glm-4.7") || model.name.contains("glm-5") || model.name.contains("gemini-3.5") || model.name.contains("gpt-5.4-mini") || model.name.contains("kimi") || model.name.contains("sonnet") || model.name.contains("opus") || model.name.contains("fable")
-            case .prototypeBrief:
+            case .deepen, .prototypeBrief:
                 model.name.contains("pro") || model.name.contains("glm-4.6") || model.name.contains("glm-4.7") || model.name.contains("glm-5") || model.name.contains("kimi") || model.name.contains("gpt-5") || model.name.contains("claude") || model.name.contains("sonnet") || model.name.contains("opus") || model.name.contains("fable")
             }
         }
@@ -301,7 +301,7 @@ public struct ModelRouter: Sendable {
     }
 
     /// Reasoning-heavy tasks where a stronger model is worth the spend.
-    static let judgmentTasks: Set<ModelTaskClass> = [.critique, .connect, .prototypeBrief]
+    static let judgmentTasks: Set<ModelTaskClass> = [.critique, .connect, .deepen, .prototypeBrief]
 
     /// Coarse capability ordering (higher = more capable) used to pick the best
     /// available model for judgment work. Calibrated by published model tier, not

@@ -610,6 +610,8 @@ public final class ShellViewModel: ObservableObject {
         switch taskClass {
         case .critique, .connect:
             return "It's on the idea's card and in Patterns."
+        case .deepen:
+            return "The idea's body was grown — see its History for the prior version."
         case .prototypeBrief:
             return "Open it from the idea's ··· menu."
         default:
@@ -1032,12 +1034,21 @@ public final class ShellViewModel: ObservableObject {
     }
 
     public func markIdeaReady(_ idea: IdeaSeed) {
-        updateIdea(idea) {
-            $0.status = .ready
-            $0.stage = .readyToPrototype
-            $0.ripeness = max($0.ripeness, 80)
+        do {
+            var readyIdea = try store.idea(id: idea.id)
+            readyIdea.status = .ready
+            readyIdea.stage = .readyToPrototype
+            readyIdea.ripeness = max(readyIdea.ripeness, 80)
+            readyIdea.updatedAt = Date()
+            try store.upsertIdea(readyIdea)
+            try ensureBuildPlan(for: readyIdea)
+            selectedPage = .ready
+            reload()
+            errorMessage = "Ready to build: \(readyIdea.title). A local build plan is waiting on its card."
+            reinforceTaste(with: readyIdea, label: 1)
+        } catch {
+            errorMessage = error.localizedDescription
         }
-        reinforceTaste(with: idea, label: 1)
     }
 
     public func archiveIdea(_ idea: IdeaSeed) {
@@ -1191,14 +1202,12 @@ public final class ShellViewModel: ObservableObject {
 
     public func createBuildPlan(for idea: IdeaSeed) {
         do {
-            guard try store.prototypeBriefs(for: idea.id).isEmpty else {
+            guard try ensureBuildPlan(for: idea) else {
                 selectedPage = page(for: idea.status)
                 reload()
                 errorMessage = "Build plan already exists for \(idea.title). Open it from the idea's ··· menu."
                 return
             }
-            let brief = buildPlanBrief(for: idea)
-            try store.savePrototypeBrief(brief)
             reinforceTaste(with: idea, label: 1)
             selectedPage = page(for: idea.status)
             reload()
@@ -1206,6 +1215,13 @@ public final class ShellViewModel: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+
+    @discardableResult
+    private func ensureBuildPlan(for idea: IdeaSeed) throws -> Bool {
+        guard try store.prototypeBriefs(for: idea.id).isEmpty else { return false }
+        try store.savePrototypeBrief(buildPlanBrief(for: idea))
+        return true
     }
 
     public func buildPlan(for idea: IdeaSeed) -> PrototypeBrief? {

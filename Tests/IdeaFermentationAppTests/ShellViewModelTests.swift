@@ -243,6 +243,8 @@ struct ShellViewModelTests {
 
         model.markIdeaReady(idea)
         #expect(model.count(for: .ready) == 1)
+        #expect(model.buildPlan(for: idea) != nil)
+        #expect(model.errorMessage?.contains("Ready to build") == true)
 
         model.createBuildPlan(for: model.ready.items[0])
         model.createBuildPlan(for: model.ready.items[0])

@@ -9,6 +9,15 @@ public struct AgentPromptFactory: Sendable {
         case .tag: "Tag this idea with concise themes, domains, tone, and project relevance. Return JSON matching TagResult."
         case .summarize: "Summarize this source into reusable evidence for idea development. Return JSON matching SourceSummary."
         case .connect: "Find surprising but defensible connections to adjacent ideas and sources. Return JSON array of ConnectionCandidate."
+        case .deepen: """
+        Grow this idea into a sharper, more developed version of ITSELF. Fold in the linked \
+        evidence, the connections to adjacent ideas, and the open critiques — resolve what you \
+        can, sharpen the core thesis, make the smallest real test concrete. Keep the author's \
+        voice and original intent; deepen, don't replace; never invent facts not grounded in the \
+        material. The body should read as the same idea, matured. Return ONLY JSON matching \
+        ExtractedSeed: {"title": "<=70 chars, refined only if clearly better", "body": "the \
+        matured idea", "tags": ["3-5 lowercase themes"]}.
+        """
         case .critique: "Identify weak assumptions, objections, missing context, and contradictions. Return JSON matching CritiqueResult."
         case .scoreRipeness: "Score novelty, clarity, evidence, resonance, feasibility, and timing from 0-100. Return JSON matching RipenessResult."
         case .prototypeBrief: "Create a concise build-ready prototype brief with MVP scope, risks, and next actions. Return JSON matching PrototypeBriefDraft."
@@ -47,9 +56,12 @@ public final class FermentationEngine {
             jobs.append(try store.enqueue(FermentationJob(sourceID: source.id, taskClass: .summarize, inputHash: TextHashing.sha256("summarize\n\(source.textHash)"), runID: run.id)))
         }
         for idea in ideas {
+            // Fermenting is the active-development stage, so its cloud pass GROWS the idea's
+            // body (.deepen) rather than only annotating it. Connections are still formed on
+            // every local pass and by the cognitive loop, so nothing is lost.
             let task: ModelTaskClass = switch idea.status {
             case .inbox: .tag
-            case .fermenting: .connect
+            case .fermenting: .deepen
             case .ripening: .scoreRipeness
             case .ready: .prototypeBrief
             case .archived: .summarize
@@ -324,6 +336,25 @@ public final class FermentationEngine {
             for connection in AgentResultInterpreter.connections(for: idea, candidates: try store.listIdeas(), output: output) {
                 try store.saveConnection(IdeaConnection(fromID: connection.fromID, toID: connection.toID, explanation: connection.explanation, confidence: connection.confidence))
             }
+        case .deepen:
+            // The one pass that actually grows an idea's CONTENT. Only a real, decoded cloud
+            // rewrite counts — a non-decodable reply leaves the idea untouched rather than
+            // clobbering it. The prior body is snapshotted first, so growth is reversible.
+            guard let seed = AgentResultInterpreter.expandedSeed(from: output) else { break }
+            let matured = seed.body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard matured.count >= idea.body.count / 2, !matured.isEmpty, matured != idea.body else { break }
+            try store.saveBodyVersion(IdeaBodyVersion(
+                ideaID: idea.id, version: idea.bodyVersion,
+                title: idea.title, body: idea.body,
+                source: idea.bodyVersion == 1 ? "original" : "prior"
+            ))
+            let refinedTitle = seed.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !refinedTitle.isEmpty, refinedTitle.count <= 80 { idea.title = refinedTitle }
+            idea.body = matured
+            idea.bodyVersion += 1
+            if !seed.tags.isEmpty { idea.manualTags = Array(Set(idea.manualTags + seed.tags)).sorted() }
+            idea.updatedAt = Date()
+            try store.upsertIdea(idea)
         case .critique:
             let result = AgentResultInterpreter.critique(for: idea, output: output)
             try store.saveCritique(IdeaCritique(
@@ -334,8 +365,12 @@ public final class FermentationEngine {
                 source: "\(job.modelRoute?.provider ?? "Cloud")/\(job.modelRoute?.model ?? "model")"
             ))
         case .scoreRipeness:
-            let result = AgentResultInterpreter.ripeness(for: idea, output: output)
-            try applyRipeness(result, to: &idea)
+            // Only a genuinely-decoded cloud score counts as a quality pass. If the model's
+            // output didn't parse, fall back to local scores but WITHOUT quality-verifying —
+            // so a degraded run can't unlock Ready.
+            let decoded = AgentResultInterpreter.decodedRipeness(from: output)
+            let result = decoded ?? AgentResultInterpreter.ripeness(for: idea)
+            try applyRipeness(result, to: &idea, qualityVerified: decoded != nil)
             try store.upsertIdea(idea)
         case .prototypeBrief:
             let draft = AgentResultInterpreter.brief(for: idea, output: output)
@@ -370,7 +405,11 @@ public final class FermentationEngine {
         }
     }
 
-    private func applyRipeness(_ result: RipenessResult, to idea: inout IdeaSeed) throws {
+    /// Apply a ripeness result and advance status under the quality gate. `qualityVerified`
+    /// is true only when the scores came from a real, decoded cloud pass — that's what
+    /// unlocks promotion to Ready. A degraded cloud run (undecodable output that fell back
+    /// to local scores) passes false and cannot promote to Ready.
+    private func applyRipeness(_ result: RipenessResult, to idea: inout IdeaSeed, qualityVerified: Bool) throws {
         idea.novelty = result.novelty
         idea.evidence = result.evidence
         idea.personalResonance = result.personalResonance
@@ -378,12 +417,10 @@ public final class FermentationEngine {
         idea.timing = result.timing
         idea.ripeness = calibration.ripeness(novelty: result.novelty, clarity: result.clarity, evidence: result.evidence, resonance: result.personalResonance, feasibility: result.feasibility, timing: result.timing)
         idea.updatedAt = Date()
-        if idea.ripeness >= 78 {
-            idea.status = .ready
-            idea.stage = .readyToPrototype
-        } else if idea.ripeness >= 55 {
-            idea.status = .ripening
-            idea.stage = .brewing
+        if qualityVerified { idea.qualityVerified = true }
+        if let (status, stage) = Self.promotion(ripeness: idea.ripeness, qualityVerified: idea.qualityVerified, current: idea.status) {
+            idea.status = status
+            idea.stage = stage
         }
         try store.saveRipenessScore(RipenessScore(ideaID: idea.id, novelty: result.novelty, clarity: result.clarity, evidence: result.evidence, personalResonance: result.personalResonance, feasibility: result.feasibility, timing: result.timing))
     }
@@ -394,6 +431,7 @@ public final class FermentationEngine {
         case .tag: "Tagging Agent"
         case .summarize: "Archivist Agent"
         case .connect: "Connector Agent"
+        case .deepen: "Deepening Agent"
         case .critique: "Critic Agent"
         case .scoreRipeness: "Ripeness Agent"
         case .prototypeBrief: "Prototype Agent"
@@ -409,6 +447,25 @@ public final class FermentationEngine {
     /// idea. Bounded so the learning loop nudges scores without overwhelming the
     /// other five axes — at most ±~3.7 ripeness once averaged across the six.
     private static let learnedResonanceWeight = 22.0
+
+    /// Ripeness ladder. `.ready` is gated: reaching it requires BOTH a high score AND a
+    /// real cloud quality pass (`qualityVerified`). Structural bulk — a long, heavily
+    /// tagged, source-stuffed idea — can climb to Ripening on local arithmetic alone, but
+    /// can never auto-promote to Ready until the machine has actually reasoned about it.
+    public static let readyThreshold = 78.0
+    public static let ripeningThreshold = 55.0
+
+    /// The (status, stage) an idea earns at a given ripeness under the quality gate.
+    /// Returns nil to mean "leave status/stage unchanged". A ready-scoring idea that
+    /// isn't quality-verified is held at Ripening rather than promoted.
+    public static func promotion(ripeness: Double, qualityVerified: Bool, current: IdeaStatus) -> (IdeaStatus, FermentationStage)? {
+        if ripeness >= readyThreshold {
+            return qualityVerified ? (.ready, .readyToPrototype) : (.ripening, .brewing)
+        }
+        if ripeness >= ripeningThreshold { return (.ripening, .brewing) }
+        if current == .inbox { return (.fermenting, .cooling) }
+        return nil
+    }
 
     /// Novelty = how unlike everything you've already captured this idea is, blended
     /// with the lexical signal. The semantic-distance half is the meaningful upgrade:
@@ -493,15 +550,12 @@ public final class FermentationEngine {
         next.ripeness = calibration.ripeness(novelty: novelty, clarity: clarity, evidence: evidence, resonance: resonance, feasibility: feasibility, timing: timing)
         next.updatedAt = Date()
 
-        if next.ripeness >= 78 {
-            next.status = .ready
-            next.stage = .readyToPrototype
-        } else if next.ripeness >= 55 {
-            next.status = .ripening
-            next.stage = .brewing
-        } else if next.status == .inbox {
-            next.status = .fermenting
-            next.stage = .cooling
+        // Quality-gated ladder: an idea that has NOT been cloud-verified can climb to
+        // Ripening on local arithmetic but never auto-promote to Ready — that stops a
+        // verbose, over-tagged, source-stuffed but unreasoned idea from gaming its way in.
+        if let (status, stage) = Self.promotion(ripeness: next.ripeness, qualityVerified: next.qualityVerified, current: next.status) {
+            next.status = status
+            next.stage = stage
         }
         return next
     }

@@ -48,12 +48,28 @@ public final class IdeaStore {
             evidence REAL NOT NULL,
             personal_resonance REAL NOT NULL,
             timing REAL NOT NULL,
-            derived_from_never_send INTEGER NOT NULL DEFAULT 0
+            derived_from_never_send INTEGER NOT NULL DEFAULT 0,
+            origin TEXT NOT NULL DEFAULT 'manual',
+            quality_verified INTEGER NOT NULL DEFAULT 0,
+            body_version INTEGER NOT NULL DEFAULT 1
         )
         """)
         try db.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS idea_search
         USING fts5(id UNINDEXED, title, body, tags)
+        """)
+        // Non-destructive history of an idea's body — the `.deepen` pass snapshots the
+        // prior text here before overwriting, so idea growth is reversible.
+        try db.execute("""
+        CREATE TABLE IF NOT EXISTS idea_body_versions (
+            id TEXT PRIMARY KEY,
+            idea_id TEXT NOT NULL,
+            version INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )
         """)
         try db.execute("""
         CREATE TABLE IF NOT EXISTS source_items (
@@ -306,6 +322,7 @@ public final class IdeaStore {
             "CREATE INDEX IF NOT EXISTS idx_connections_from ON idea_connections(from_id)",
             "CREATE INDEX IF NOT EXISTS idx_connections_to ON idea_connections(to_id)",
             "CREATE INDEX IF NOT EXISTS idx_ripeness_idea ON ripeness_scores(idea_id)",
+            "CREATE INDEX IF NOT EXISTS idx_body_versions_idea ON idea_body_versions(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_critiques_idea ON idea_critiques(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_briefs_idea ON prototype_briefs(idea_id)",
             "CREATE INDEX IF NOT EXISTS idx_outcomes_idea ON build_outcomes(idea_id)",
@@ -342,6 +359,12 @@ public final class IdeaStore {
 
     private func migrateV2Columns() throws {
         try addColumnIfMissing(table: "idea_seeds", column: "derived_from_never_send", definition: "INTEGER NOT NULL DEFAULT 0")
+        // Growth + quality-gate + provenance columns. Appended at the END of idea_seeds so
+        // the positional INSERT in upsertIdea binds them in the same order on both fresh
+        // (CREATE TABLE) and migrated (ALTER TABLE) databases.
+        try addColumnIfMissing(table: "idea_seeds", column: "origin", definition: "TEXT NOT NULL DEFAULT 'manual'")
+        try addColumnIfMissing(table: "idea_seeds", column: "quality_verified", definition: "INTEGER NOT NULL DEFAULT 0")
+        try addColumnIfMissing(table: "idea_seeds", column: "body_version", definition: "INTEGER NOT NULL DEFAULT 1")
         try addColumnIfMissing(table: "source_items", column: "metadata", definition: "TEXT NOT NULL DEFAULT '{}'")
         try addColumnIfMissing(table: "fermentation_jobs", column: "scheduled_at", definition: "REAL")
         try addColumnIfMissing(table: "fermentation_jobs", column: "completed_at", definition: "REAL")
@@ -386,7 +409,7 @@ public final class IdeaStore {
         // leave the search index pointing at stale or missing text.
         try db.transaction {
             try db.execute("""
-            INSERT INTO idea_seeds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO idea_seeds VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 body = excluded.body,
@@ -403,7 +426,10 @@ public final class IdeaStore {
                 evidence = excluded.evidence,
                 personal_resonance = excluded.personal_resonance,
                 timing = excluded.timing,
-                derived_from_never_send = derived_from_never_send | excluded.derived_from_never_send
+                derived_from_never_send = derived_from_never_send | excluded.derived_from_never_send,
+                origin = excluded.origin,
+                quality_verified = excluded.quality_verified,
+                body_version = excluded.body_version
             """, try ideaBindings(idea))
             try db.execute("DELETE FROM idea_search WHERE id = ?", [.text(idea.id.uuidString)])
             try db.execute("INSERT INTO idea_search(id, title, body, tags) VALUES (?, ?, ?, ?)", [
@@ -489,7 +515,42 @@ public final class IdeaStore {
             try db.execute("DELETE FROM prototype_briefs WHERE idea_id = ?", [.text(key)])
             try db.execute("DELETE FROM build_outcomes WHERE idea_id = ?", [.text(key)])
             try db.execute("DELETE FROM forecast_logs WHERE idea_id = ?", [.text(key)])
+            try db.execute("DELETE FROM idea_body_versions WHERE idea_id = ?", [.text(key)])
         }
+    }
+
+    // MARK: - Idea body versions (growth history)
+
+    /// Snapshot an idea's body so a subsequent `.deepen` rewrite is non-destructive.
+    public func saveBodyVersion(_ version: IdeaBodyVersion) throws {
+        try db.execute("""
+        INSERT INTO idea_body_versions (id, idea_id, version, title, body, source, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, [
+            .text(version.id.uuidString),
+            .text(version.ideaID.uuidString),
+            .int(Int64(version.version)),
+            .text(version.title),
+            .text(version.body),
+            .text(version.source),
+            .double(version.createdAt.timeIntervalSince1970)
+        ])
+    }
+
+    /// Every saved body version for an idea, newest first.
+    public func bodyVersions(for ideaID: UUID) throws -> [IdeaBodyVersion] {
+        try db.query("SELECT * FROM idea_body_versions WHERE idea_id = ? ORDER BY version DESC", [.text(ideaID.uuidString)])
+            .map { row in
+                IdeaBodyVersion(
+                    id: UUID(uuidString: row.required("id"))!,
+                    ideaID: UUID(uuidString: row.required("idea_id"))!,
+                    version: (row["version"] ?? nil).flatMap { Int($0) } ?? 1,
+                    title: row.required("title"),
+                    body: row.required("body"),
+                    source: row.required("source"),
+                    createdAt: Date(timeIntervalSince1970: row.double("created_at"))
+                )
+            }
     }
 
     public func semanticIdeas(_ query: String, limit: Int = 8) throws -> [IdeaSeed] {
@@ -1340,7 +1401,10 @@ public final class IdeaStore {
             .double(idea.evidence),
             .double(idea.personalResonance),
             .double(idea.timing),
-            .int(idea.derivedFromNeverSend ? 1 : 0)
+            .int(idea.derivedFromNeverSend ? 1 : 0),
+            .text(idea.origin.rawValue),
+            .int(idea.qualityVerified ? 1 : 0),
+            .int(Int64(idea.bodyVersion))
         ]
     }
 
@@ -1403,7 +1467,10 @@ public final class IdeaStore {
             evidence: row.double("evidence"),
             personalResonance: row.double("personal_resonance"),
             timing: row.double("timing"),
-            derivedFromNeverSend: (row["derived_from_never_send"] ?? nil).map { Int($0) == 1 } ?? false
+            derivedFromNeverSend: (row["derived_from_never_send"] ?? nil).map { Int($0) == 1 } ?? false,
+            origin: IdeaOrigin(rawValue: (row["origin"] ?? nil) ?? "manual") ?? .manual,
+            qualityVerified: (row["quality_verified"] ?? nil).map { Int($0) == 1 } ?? false,
+            bodyVersion: (row["body_version"] ?? nil).flatMap { Int($0) } ?? 1
         )
     }
 

@@ -78,6 +78,13 @@ enum AgentResultInterpreter {
         decode(CritiqueResult.self, from: output)
     }
 
+    /// Decodes a `.deepen` rewrite (an `ExtractedSeed`) from a possibly-chatty model reply.
+    /// No heuristic fallback: growing an idea's body only happens when a real model actually
+    /// returned a matured version — never from local arithmetic.
+    static func expandedSeed(from output: String) -> ExtractedSeed? {
+        decode(ExtractedSeed.self, from: output)
+    }
+
     static func critique(for idea: IdeaSeed, output: String? = nil) -> CritiqueResult {
         if let decoded = decode(CritiqueResult.self, from: output) { return decoded }
 
@@ -114,6 +121,13 @@ enum AgentResultInterpreter {
         return CritiqueResult(assumptions: assumptions, risks: risks, contradictions: contradictions)
     }
 
+    /// Decodes a model's ripeness JSON *without* the heuristic fallback — nil when the
+    /// model returned nothing parseable. Lets the engine gate `.ready` on a REAL cloud
+    /// score, never on the local-arithmetic fallback.
+    static func decodedRipeness(from output: String) -> RipenessResult? {
+        decode(RipenessResult.self, from: output)
+    }
+
     static func ripeness(for idea: IdeaSeed, output: String? = nil) -> RipenessResult {
         if let decoded = decode(RipenessResult.self, from: output) { return decoded }
         return RipenessResult(
@@ -126,10 +140,14 @@ enum AgentResultInterpreter {
         )
     }
 
-    /// Clarity proxy from body length, shared between the local fermentation pass
-    /// and the persisted ripeness score so the two never disagree.
+    /// Local clarity proxy. Length is a weak signal for clarity (a wall of text is often
+    /// LESS clear), so the local pass caps its contribution: raw length can carry an idea
+    /// to "adequately described" but not to a top clarity score. Only a real cloud pass —
+    /// which actually reads the idea — can award clarity above the local ceiling. Shared
+    /// between the local fermentation pass and the persisted ripeness score so they agree.
+    static let localClarityCeiling = 70.0
     static func localClarity(for idea: IdeaSeed) -> Double {
-        min(100, max(20, Double(idea.body.count) / 6))
+        min(localClarityCeiling, max(20, Double(idea.body.count) / 9))
     }
 
     static func brief(for idea: IdeaSeed, output: String? = nil) -> PrototypeBriefDraft {
