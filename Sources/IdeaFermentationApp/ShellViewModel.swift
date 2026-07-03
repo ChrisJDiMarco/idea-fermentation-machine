@@ -611,7 +611,7 @@ public final class ShellViewModel: ObservableObject {
         case .critique, .connect:
             return "It's on the idea's card and in Patterns."
         case .deepen:
-            return "The idea's body was grown — see its History for the prior version."
+            return "The idea's body was grown — see Growth history on the idea for the prior version."
         case .prototypeBrief:
             return "Open it from the idea's ··· menu."
         default:
@@ -1230,6 +1230,14 @@ public final class ShellViewModel: ObservableObject {
 
     public func critique(for idea: IdeaSeed) -> IdeaCritique? {
         critiques.first { $0.ideaID == idea.id }
+    }
+
+    /// Prior snapshots of an idea's body (newest first), captured each time the `.deepen`
+    /// pass grew it. Empty until the idea has actually been grown at least once. Read on
+    /// demand — only the detail view of an already-grown idea asks for it.
+    public func bodyVersions(for idea: IdeaSeed) -> [IdeaBodyVersion] {
+        guard idea.bodyVersion > 1 else { return [] }
+        return (try? store.bodyVersions(for: idea.id)) ?? []
     }
 
     public func openBuildPlan(for idea: IdeaSeed) {

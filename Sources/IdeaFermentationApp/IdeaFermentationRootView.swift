@@ -855,7 +855,7 @@ struct FermentationDetailCard: View {
                             Text(idea.body)
                                 .font(.system(size: 14))
                                 .foregroundStyle(IFMTheme.muted)
-                            Text("\(idea.stage.title)  •  Added \(idea.createdAt.formatted(date: .abbreviated, time: .omitted))")
+                            Text("\(idea.stage.title)  •  \(idea.origin.label)\(idea.bodyVersion > 1 ? "  •  Grown to v\(idea.bodyVersion)" : "")  •  Added \(idea.createdAt.formatted(date: .abbreviated, time: .omitted))")
                                 .font(.caption)
                                 .foregroundStyle(IFMTheme.muted)
                         }
@@ -882,6 +882,17 @@ struct FermentationDetailCard: View {
                         DetailPane(title: "Next Experiment", symbol: "bolt", color: IFMTheme.blue, lines: critique?.assumptions.isEmpty == false ? critique!.assumptions : ["Generate a prototype brief when ready."])
                         DetailPane(title: "Readiness", symbol: "chart.line.uptrend.xyaxis", color: IFMTheme.purple, lines: ["Ripeness \(Int(idea.ripeness))", "Feasibility \(Int(idea.feasibility))"])
                         DetailPane(title: "Privacy", symbol: "lock.shield", color: IFMTheme.slate, lines: ["Preview cloud payloads before sending."])
+                        if idea.bodyVersion > 1 {
+                            let versions = model.bodyVersions(for: idea)
+                            DetailPane(
+                                title: "Growth history",
+                                symbol: "clock.arrow.circlepath",
+                                color: IFMTheme.green,
+                                lines: versions.isEmpty
+                                    ? ["Grown to v\(idea.bodyVersion) by the Deepening Agent."]
+                                    : versions.prefix(2).map { "was: \($0.body.prefix(80))…" }
+                            )
+                        }
                     }
                 }
             }
