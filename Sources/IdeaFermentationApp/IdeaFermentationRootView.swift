@@ -4,13 +4,16 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 public struct IdeaFermentationRootView: View {
-    @StateObject private var model: ShellViewModel
+    // Observed, not owned: the AppDelegate owns the ShellViewModel so the autonomous
+    // scheduler + mind loops survive the window closing (they used to die with the
+    // window's @StateObject). Reopening the window re-attaches to the same live instance.
+    @ObservedObject private var model: ShellViewModel
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var searchFocused: Bool
     @State private var toastDismiss: Task<Void, Never>?
 
-    public init(store: IdeaStore, captureServer: CaptureServer? = nil) {
-        _model = StateObject(wrappedValue: ShellViewModel(store: store, captureServer: captureServer))
+    public init(model: ShellViewModel) {
+        self.model = model
     }
 
     public var body: some View {

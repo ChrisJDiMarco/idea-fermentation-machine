@@ -16,8 +16,13 @@ public struct TasteManifold: Equatable, Sendable {
     public let dislikedCount: Int
 
     /// Minimum liked AND disliked examples (with usable embeddings) before the manifold
-    /// influences scoring — below this, centroids are too noisy to trust.
-    public static let minPerSide = 3
+    /// influences scoring. Set to 2 (down from 3) so a solo builder actually reaches
+    /// activation within a realistic amount of use — the `blendWeight` ramp keeps the
+    /// first activation a mere sliver (0.125), so an early, noisier centroid can only
+    /// nudge scoring, never swing it. The app's own decisions feed both sides now
+    /// (quality-verified Ready → liked; auto-archived stale ideas → disliked), so the bar
+    /// is reached by using the app, not only by manually recording build outcomes.
+    public static let minPerSide = 2
 
     public init(likedCentroid: [Double] = [], dislikedCentroid: [Double] = [], likedCount: Int = 0, dislikedCount: Int = 0) {
         self.likedCentroid = likedCentroid

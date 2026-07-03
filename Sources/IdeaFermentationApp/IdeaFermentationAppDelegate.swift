@@ -7,6 +7,11 @@ public final class IdeaFermentationAppDelegate: NSObject, NSApplicationDelegate 
     private var window: NSWindow?
     private var store: IdeaStore?
     private var captureServer: CaptureServer?
+    // Owned by the app, NOT the window — so the autonomous scheduler + mind cadence keep
+    // running with the window closed (they used to be tied to the window's @StateObject and
+    // stopped the moment it closed). Closing the window now only hides the UI; the loops and
+    // capture server run until the app quits.
+    private var viewModel: ShellViewModel?
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         let store = (try? IdeaStore.live()) ?? fallbackStore()
@@ -24,7 +29,12 @@ public final class IdeaFermentationAppDelegate: NSObject, NSApplicationDelegate 
         captureServer.startIfEnabled()
         self.captureServer = captureServer
 
-        makeWindow(store: store, captureServer: captureServer)
+        // Create the view model once, here, so its scheduler/mind loops live for the whole
+        // app session regardless of window state.
+        let viewModel = ShellViewModel(store: store, captureServer: captureServer)
+        self.viewModel = viewModel
+
+        makeWindow(viewModel: viewModel)
     }
 
     // MARK: Menu command relays → SwiftUI (via NotificationCenter)
@@ -35,13 +45,13 @@ public final class IdeaFermentationAppDelegate: NSObject, NSApplicationDelegate 
     @objc func ifmRefresh(_ sender: Any?) { NotificationCenter.default.post(name: .ifmRefresh, object: nil) }
     @objc func ifmRunLocalPass(_ sender: Any?) { NotificationCenter.default.post(name: .ifmRunLocalPass, object: nil) }
 
-    private func makeWindow(store: IdeaStore, captureServer: CaptureServer) {
+    private func makeWindow(viewModel: ShellViewModel) {
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let root = IdeaFermentationRootView(store: store, captureServer: captureServer)
+        let root = IdeaFermentationRootView(model: viewModel)
         let minSize = NSSize(width: 1040, height: 680)
         let visibleFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1536, height: 960)
         let launchSize = NSSize(
@@ -72,10 +82,11 @@ public final class IdeaFermentationAppDelegate: NSObject, NSApplicationDelegate 
         false
     }
 
-    // Re-show the window when the user clicks the Dock icon.
+    // Re-show the window when the user clicks the Dock icon — re-attaching to the SAME
+    // live view model, so nothing about the running loops or in-memory state resets.
     public func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        if !hasVisibleWindows, let store, let captureServer {
-            makeWindow(store: store, captureServer: captureServer)
+        if !hasVisibleWindows, let viewModel {
+            makeWindow(viewModel: viewModel)
         }
         return true
     }

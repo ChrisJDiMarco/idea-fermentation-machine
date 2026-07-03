@@ -20,7 +20,7 @@ struct TasteManifoldTests {
             ideas: [idea("a", "ambient capture tool", status: .ready), idea("b", "tax dashboard", status: .archived)],
             outcomes: []
         )
-        #expect(!manifold.isActive)                                  // need ≥3 per side
+        #expect(!manifold.isActive)                                  // 1 per side is below the min (2)
         #expect(manifold.affinity(for: LocalEmbeddings.embed("anything")) == 0) // strict no-op
     }
 
@@ -74,9 +74,9 @@ struct TasteManifoldTests {
         func manifold(_ n: Int) -> TasteManifold {
             TasteManifold(likedCentroid: [1, 0], dislikedCentroid: [0, 1], likedCount: n, dislikedCount: n)
         }
-        #expect(manifold(2).blendWeight == 0)                       // inactive
-        #expect(abs(manifold(3).blendWeight - 0.125) < 0.001)       // just activated: a sliver
-        #expect(abs(manifold(6).blendWeight - 0.5) < 0.001)         // matured: full half-weight
+        #expect(manifold(1).blendWeight == 0)                       // inactive (below minPerSide)
+        #expect(abs(manifold(2).blendWeight - 0.125) < 0.001)       // just activated: a sliver
+        #expect(abs(manifold(5).blendWeight - 0.5) < 0.001)         // matured: full half-weight
     }
 
     @Test func positiveOutcomeCountsAsLikedEvenIfArchived() {
